@@ -65,7 +65,7 @@
     bottom: calc(var(--tt-inset-bottom, 0px) + 54px);
     width: min(430px, calc(100vw - 16px));
     max-height: min(760px, calc(100dvh - var(--tt-inset-top, 0px) - var(--tt-inset-bottom, 0px) - 66px));
-    display: none;
+    display: none !important;
     flex-direction: column;
     overflow: hidden;
     background: var(--tt-gpt-panel-bg);
@@ -77,7 +77,7 @@
 }
 
 #tt-gpt-image-relay.tt-gpt-open .tt-gpt-panel {
-    display: flex;
+    display: flex !important;
 }
 
 #tt-gpt-image-relay.tt-gpt-minimized .tt-gpt-panel-body {

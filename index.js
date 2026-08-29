@@ -982,15 +982,10 @@ function setupUi(root) {
 
 function mountUi() {
     if (getRoot()) return true;
-    const candidates = [
-        document.querySelector('#leftSendForm'),
-        document.querySelector('#send_form'),
-        document.querySelector('#sd_wand_container'),
-    ].filter(Boolean);
-    const container = candidates.find(element => {
-        const style = getComputedStyle(element);
-        return style.display !== 'none' && style.visibility !== 'hidden';
-    }) || document.body;
+    // Mount at body level on mobile. ST send-form containers can have
+    // display:contents, transforms, or overflow rules that hide fixed panels.
+    // The toolbar has its own fixed positioning, so it remains visible there.
+    const container = document.body;
     if (!container) return false;
     const root = buildUi();
     if (container === document.body) root.classList.add('tt-gpt-body-mounted');
