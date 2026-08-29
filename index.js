@@ -81,7 +81,13 @@ function loadSettings() {
 
 function waitForHostReady() {
     const ready = globalThis.__TAURITAVERN__?.ready || globalThis.__TAURITAVERN_MAIN_READY__;
-    return ready && typeof ready.then === 'function' ? ready : Promise.resolve();
+    if (!ready || typeof ready.then !== 'function') return Promise.resolve();
+    // Some mobile shells expose a readiness promise that never settles.
+    // Do not block the extension UI forever while waiting for it.
+    return Promise.race([
+        ready,
+        new Promise(resolve => setTimeout(resolve, 1500)),
+    ]);
 }
 
 function getRoot() {
@@ -997,10 +1003,8 @@ function mountUi() {
 async function activateImpl() {
     await waitForHostReady();
     hostContext = globalThis.SillyTavern?.getContext?.() || null;
-    if (!hostContext) {
-        console.warn(`[${EXTENSION_ID}] SillyTavern context is not ready`);
-        return;
-    }
+    if (!hostContext) console.warn(`[${EXTENSION_ID}] SillyTavern context is not ready; mounting UI anyway`);
+    settings ||= { ...DEFAULT_SETTINGS };
     loadSettings();
     if (!mountUi()) {
         mountObserver = new MutationObserver(() => {
