@@ -23,6 +23,12 @@
     pointer-events: auto;
 }
 
+#tt-gpt-image-relay.tt-gpt-body-mounted .tt-gpt-toolbar {
+    position: fixed;
+    left: 8px;
+    bottom: calc(var(--tt-inset-bottom, 0px) + 8px);
+}
+
 #tt-gpt-image-relay .tt-gpt-action,
 #tt-gpt-image-relay .tt-gpt-panel button {
     color: var(--SmartThemeBodyColor, #eee);

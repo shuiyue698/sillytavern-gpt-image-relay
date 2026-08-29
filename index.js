@@ -787,6 +787,31 @@ function buildUi() {
     const root = document.createElement('div');
     root.id = ROOT_ID;
     root.innerHTML = `
+        <div class="tt-gpt-toolbar" role="toolbar" aria-label="GPT image">
+            <button type="button" class="tt-gpt-action" data-mode="character" title="Generate from character"><i class="fa-solid fa-user"></i><span>Character</span></button>
+            <button type="button" class="tt-gpt-action" data-mode="scene" title="Generate from scene"><i class="fa-solid fa-mountain-sun"></i><span>Scene</span></button>
+            <button type="button" class="tt-gpt-action" data-mode="last" title="Generate from latest text"><i class="fa-solid fa-paragraph"></i><span>Latest</span></button>
+            <button type="button" class="tt-gpt-action tt-gpt-settings-button" data-action="toggle" title="Open image settings"><i class="fa-solid fa-sliders"></i><span>Settings</span></button>
+        </div>
+        <section class="tt-gpt-panel" data-tt-mobile-surface="free-window" aria-label="GPT image controls">
+            <header class="tt-gpt-panel-header" data-drag-handle><strong>GPT Image</strong><div class="tt-gpt-header-actions"><button type="button" data-action="generate" title="Generate"><i class="fa-solid fa-wand-magic-sparkles"></i></button><button type="button" data-action="minimize" title="Minimize"><i class="fa-solid fa-minus"></i></button></div></header>
+            <div class="tt-gpt-panel-body">
+                <div class="tt-gpt-grid"><label>Image API URL<input type="url" data-setting="apiUrl" placeholder="https://.../v1" autocomplete="url"></label><label>Image API key<input type="password" data-setting="apiKey" placeholder="API key" autocomplete="off"></label></div>
+                <div class="tt-gpt-inline"><button type="button" class="menu_button" data-action="test">Test connection</button><button type="button" class="menu_button" data-action="refresh-models">Refresh models</button><span id="tt-gpt-api-status" aria-live="polite"></span></div>
+                <div class="tt-gpt-grid"><label>Image model<select id="tt-gpt-image-model-select" data-model-select="imageModel"></select></label><label>Image model (custom)<input type="text" data-setting="imageModel" placeholder="gpt-image-1"></label><label>Analysis model<select id="tt-gpt-analysis-model-select" data-model-select="analysisModel"></select></label><label>Analysis model (custom)<input type="text" data-setting="analysisModel" placeholder="gpt-5.6-luna"></label><label>Resolution<select data-setting="resolution">${RESOLUTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Style<select data-setting="style">${STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Content source<select data-setting="sourceMode"><option value="card_text">Character card + current text</option><option value="interface_text">Current interface text only</option></select></label><label class="tt-gpt-checkbox"><input type="checkbox" data-setting="autoAnalyze"> Auto-analyze reference</label></div>
+                <label>Additional prompt<textarea data-setting="manualPrompt" rows="3" placeholder="Added to every image request"></textarea></label>
+                <div class="tt-gpt-grid"><label>Protagonist (locked)<textarea data-setting="protagonist" rows="3" placeholder="Main character only"></textarea></label><label>Scene cast<textarea data-setting="sceneCast" rows="3" placeholder="People visible in the scene"></textarea></label></div>
+                <div class="tt-gpt-reference-row"><div class="tt-gpt-reference-file"><label>Reference image<input id="tt-gpt-reference-file" type="file" accept="image/png,image/jpeg,image/webp"></label><img id="tt-gpt-reference-preview" alt="Reference preview" hidden><button type="button" class="menu_button" data-action="clear-reference">Clear reference</button></div><div class="tt-gpt-reference-analysis"><label>Image analysis (editable)<textarea id="tt-gpt-caption" data-setting="referenceCaption" rows="9" placeholder="Analysis result appears here"></textarea></label><button type="button" class="menu_button" data-action="analyze">Analyze reference</button></div></div>
+                <div id="tt-gpt-status" class="tt-gpt-status" role="status" aria-live="polite"></div>
+            </div>
+        </section>`;
+    return root;
+}
+
+function buildUiBroken() {
+    const root = document.createElement('div');
+    root.id = ROOT_ID;
+    root.innerHTML = `
         <div class="tt-gpt-toolbar" role="toolbar" aria-label="GPT 生图">
             <button type="button" class="tt-gpt-action" data-mode="character" title="读取角色卡和对话，生成主角">
                 <i class="fa-solid fa-user"></i><span>角色</span>
@@ -862,8 +887,15 @@ function setupUi(root) {
         const now = Date.now();
         if (now - lastSettingsToggle < 250) return;
         lastSettingsToggle = now;
-        root.classList.toggle('tt-gpt-open');
-        settingsButton?.setAttribute('aria-expanded', root.classList.contains('tt-gpt-open') ? 'true' : 'false');
+        const open = !root.classList.contains('tt-gpt-open');
+        root.classList.toggle('tt-gpt-open', open);
+        // Inline fallback bypasses host/mobile theme rules that may override
+        // the extension stylesheet's display or stacking context.
+        panel.style.display = open ? 'flex' : 'none';
+        panel.style.visibility = open ? 'visible' : 'hidden';
+        panel.style.pointerEvents = open ? 'auto' : 'none';
+        panel.style.zIndex = '2147483000';
+        settingsButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
     };
     settingsButton?.setAttribute('aria-expanded', 'false');
     // Direct listeners are required by some Android WebViews where delegated
@@ -950,9 +982,18 @@ function setupUi(root) {
 
 function mountUi() {
     if (getRoot()) return true;
-    const container = document.querySelector('#sd_wand_container, #leftSendForm, #send_form');
+    const candidates = [
+        document.querySelector('#leftSendForm'),
+        document.querySelector('#send_form'),
+        document.querySelector('#sd_wand_container'),
+    ].filter(Boolean);
+    const container = candidates.find(element => {
+        const style = getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+    }) || document.body;
     if (!container) return false;
     const root = buildUi();
+    if (container === document.body) root.classList.add('tt-gpt-body-mounted');
     container.appendChild(root);
     setupUi(root);
     return true;
