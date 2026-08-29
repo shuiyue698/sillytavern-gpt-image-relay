@@ -854,6 +854,23 @@ function buildUi() {
 function setupUi(root) {
     const panel = root.querySelector('.tt-gpt-panel');
     const handle = root.querySelector('[data-drag-handle]');
+    const settingsButton = root.querySelector('.tt-gpt-settings-button');
+    let lastSettingsToggle = 0;
+    const toggleSettings = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const now = Date.now();
+        if (now - lastSettingsToggle < 250) return;
+        lastSettingsToggle = now;
+        root.classList.toggle('tt-gpt-open');
+        settingsButton?.setAttribute('aria-expanded', root.classList.contains('tt-gpt-open') ? 'true' : 'false');
+    };
+    settingsButton?.setAttribute('aria-expanded', 'false');
+    // Direct listeners are required by some Android WebViews where delegated
+    // events on a display:contents extension root do not bubble reliably.
+    settingsButton?.addEventListener('touchend', toggleSettings, { passive: false });
+    settingsButton?.addEventListener('pointerup', toggleSettings);
+    settingsButton?.addEventListener('click', toggleSettings);
     const dispatchAction = event => {
         const button = event.target.closest('button');
         if (!button || !root.contains(button)) return;
@@ -863,7 +880,7 @@ function setupUi(root) {
             void generateImage(mode);
             return;
         }
-        if (action === 'toggle') root.classList.toggle('tt-gpt-open');
+        if (action === 'toggle') toggleSettings(event);
         if (action === 'minimize') root.classList.toggle('tt-gpt-minimized');
         if (action === 'test') void testConnection();
         if (action === 'refresh-models') void refreshModels();
