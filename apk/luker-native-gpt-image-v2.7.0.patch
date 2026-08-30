@@ -1,26 +1,40 @@
-From a5dcd4c908bce3813a08a54e23747766f6a56a65 Mon Sep 17 00:00:00 2001
+From d6eb67fdc64073bb91c91695fe2257428a8380df Mon Sep 17 00:00:00 2001
 From: shuiyue698 <shuiyue698@users.noreply.github.com>
 Date: Sun, 30 Aug 2026 20:44:33 +0800
 Subject: [PATCH] Add built-in GPT image relay to Luker Android
 
 ---
- android-app/app/build.gradle.kts              |    2 +-
+ android-app/app/build.gradle.kts              |   12 +-
  .../app/src/main/res/values/strings.xml       |    2 +-
  package-lock.json                             |    4 +-
  package.json                                  |    2 +-
  public/index.html                             |    2 +
- public/scripts/native-gpt-image/index.js      | 1135 +++++++++++++++++
- public/scripts/native-gpt-image/style.css     |  292 +++++
+ public/scripts/native-gpt-image/index.js      | 1176 +++++++++++++++++
+ public/scripts/native-gpt-image/style.css     |  307 +++++
+ public/scripts/templates/wandMenu.html        |    6 +
  src/endpoints/openai.js                       |  130 +-
- 8 files changed, 1551 insertions(+), 18 deletions(-)
+ 9 files changed, 1621 insertions(+), 20 deletions(-)
  create mode 100644 public/scripts/native-gpt-image/index.js
  create mode 100644 public/scripts/native-gpt-image/style.css
 
 diff --git a/android-app/app/build.gradle.kts b/android-app/app/build.gradle.kts
-index d340818..8fb4060 100644
+index d340818..f1c9134 100644
 --- a/android-app/app/build.gradle.kts
 +++ b/android-app/app/build.gradle.kts
-@@ -67,7 +67,7 @@ android {
+@@ -13,6 +13,12 @@ val availableNodeAbis = jniLibsDir
+     ?.map { it.name }
+     ?.toSet()
+     ?: emptySet()
++val requestedNodeAbi = System.getenv("LUKER_ANDROID_ABI")?.trim().orEmpty()
++val selectedNodeAbis = if (requestedNodeAbi.isNotEmpty() && availableNodeAbis.contains(requestedNodeAbi)) {
++    setOf(requestedNodeAbi)
++} else {
++    availableNodeAbis
++}
+ val packageJsonFile = File(projectRootDir, "package.json")
+ 
+ fun parseAppVersionName(packageJson: File): String {
+@@ -67,7 +73,7 @@ android {
      ndkVersion = "29.0.14206865"
  
      defaultConfig {
@@ -29,6 +43,17 @@ index d340818..8fb4060 100644
          minSdk = 26
          targetSdk = 34
          versionCode = appVersionCode
+@@ -80,8 +86,8 @@ android {
+         }
+ 
+         ndk {
+-            if (availableNodeAbis.isNotEmpty()) {
+-                abiFilters += availableNodeAbis
++            if (selectedNodeAbis.isNotEmpty()) {
++                abiFilters += selectedNodeAbis
+             } else {
+                 // Safe default for most real devices when libnode ABI set has not been prepared yet.
+                 abiFilters += "arm64-v8a"
 diff --git a/android-app/app/src/main/res/values/strings.xml b/android-app/app/src/main/res/values/strings.xml
 index e38b240..3ce76eb 100644
 --- a/android-app/app/src/main/res/values/strings.xml
@@ -43,26 +68,26 @@ index e38b240..3ce76eb 100644
      <string name="loading_webview">Service is ready. Loading interface...</string>
      <string name="loading_failed">Failed to start the service. Please restart the app.</string>
 diff --git a/package-lock.json b/package-lock.json
-index 58da68e..093a219 100644
+index 58da68e..4ea048e 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,12 +1,12 @@
  {
      "name": "luker",
 -    "version": "2.7.0",
-+    "version": "2.7.0-gpt.1",
++    "version": "2.7.0-gpt.2",
      "lockfileVersion": 3,
      "requires": true,
      "packages": {
          "": {
              "name": "luker",
 -            "version": "2.7.0",
-+            "version": "2.7.0-gpt.1",
++            "version": "2.7.0-gpt.2",
              "license": "AGPL-3.0",
              "dependencies": {
                  "@adobe/css-tools": "^4.4.4",
 diff --git a/package.json b/package.json
-index 284feab..2593cb5 100644
+index 284feab..7fe4fac 100644
 --- a/package.json
 +++ b/package.json
 @@ -133,7 +133,7 @@
@@ -70,7 +95,7 @@ index 284feab..2593cb5 100644
          "url": "https://github.com/funnycups/Luker.git"
      },
 -    "version": "2.7.0",
-+    "version": "2.7.0-gpt.1",
++    "version": "2.7.0-gpt.2",
      "scripts": {
          "init": "node src/server-init.js",
          "start": "node server.js",
@@ -96,10 +121,10 @@ index becf1bd..468fb7a 100644
              const documentHeight = () => {
 diff --git a/public/scripts/native-gpt-image/index.js b/public/scripts/native-gpt-image/index.js
 new file mode 100644
-index 0000000..6d2e9a6
+index 0000000..6d14662
 --- /dev/null
 +++ b/public/scripts/native-gpt-image/index.js
-@@ -0,0 +1,1135 @@
+@@ -0,0 +1,1176 @@
 +const EXTENSION_ID = 'sillytavern-gpt-image-relay';
 +// Keep the standard SillyTavern surface separate from the older TauriTavern
 +// build. Both builds used the same id in early releases, which made one
@@ -150,6 +175,7 @@ index 0000000..6d2e9a6
 +let lastModelError = null;
 +let activationPromise = null;
 +let mountObserver = null;
++let wandObserver = null;
 +let generationBusy = false;
 +let relayProxyAvailable = null;
 +
@@ -1028,6 +1054,45 @@ index 0000000..6d2e9a6
 +    handle.addEventListener('pointercancel', stop);
 +}
 +
++function mountWandButton(root) {
++    const button = document.getElementById('st-gpt-image-wand-button');
++    if (!button || button.dataset.gptBound === 'true') return Boolean(button);
++    button.dataset.gptBound = 'true';
++    let lastActivation = 0;
++    const openSettings = event => {
++        event.preventDefault();
++        event.stopPropagation();
++        const now = Date.now();
++        if (now - lastActivation < 400) return;
++        lastActivation = now;
++        root.querySelector('.tt-gpt-settings-button')?.click();
++    };
++    button.addEventListener('pointerup', openSettings, true);
++    button.addEventListener('click', openSettings);
++    button.addEventListener('keydown', event => {
++        if (event.key === 'Enter' || event.key === ' ') openSettings(event);
++    });
++    return true;
++}
++
++function scheduleWandButtonMount(root) {
++    if (mountWandButton(root)) return;
++    const target = document.body || document.documentElement;
++    if (!target || typeof MutationObserver !== 'function') return;
++    wandObserver?.disconnect();
++    wandObserver = new MutationObserver(() => {
++        if (mountWandButton(root)) {
++            wandObserver?.disconnect();
++            wandObserver = null;
++        }
++    });
++    wandObserver.observe(target, { childList: true, subtree: true });
++    setTimeout(() => {
++        wandObserver?.disconnect();
++        wandObserver = null;
++    }, 30000);
++}
++
 +function buildUi() {
 +    const root = document.createElement('div');
 +    root.id = ROOT_ID;
@@ -1161,6 +1226,7 @@ index 0000000..6d2e9a6
 +        reader.readAsDataURL(file);
 +    });
 +    bindDrag(panel, handle);
++    scheduleWandButtonMount(root);
 +    syncFormFromSettings();
 +    loadCachedModels();
 +    fillModelSelects();
@@ -1237,10 +1303,10 @@ index 0000000..6d2e9a6
 +void activate().catch(reportStartupError);
 diff --git a/public/scripts/native-gpt-image/style.css b/public/scripts/native-gpt-image/style.css
 new file mode 100644
-index 0000000..f9c4282
+index 0000000..2966b6b
 --- /dev/null
 +++ b/public/scripts/native-gpt-image/style.css
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,307 @@
 +#st-gpt-image-relay {
 +    --tt-gpt-accent: var(--SmartThemeQuoteColor, #78b7ff);
 +    --tt-gpt-panel-bg: var(--SmartThemeBlurTintColor, rgba(24, 28, 36, 0.98));
@@ -1251,6 +1317,21 @@ index 0000000..f9c4282
 +    pointer-events: none;
 +    isolation: isolate;
 +    font-size: 13px;
++}
++
++/* Keep the native entry visible in the standard magic-wand menu on mobile. */
++#extensionsMenu #st-gpt-image-wand-container {
++    display: block !important;
++}
++
++#extensionsMenu #st-gpt-image-wand-button {
++    display: flex !important;
++    align-items: center;
++    gap: 6px;
++    width: 100%;
++    min-height: 34px;
++    cursor: pointer;
++    touch-action: manipulation;
 +}
 +
 +#st-gpt-image-relay .tt-gpt-toolbar {
@@ -1533,6 +1614,23 @@ index 0000000..f9c4282
 +        align-self: stretch;
 +    }
 +}
+diff --git a/public/scripts/templates/wandMenu.html b/public/scripts/templates/wandMenu.html
+index 5382c4a..8c45285 100644
+--- a/public/scripts/templates/wandMenu.html
++++ b/public/scripts/templates/wandMenu.html
+@@ -2,6 +2,12 @@
+     <div id="data_bank_wand_container" class="extension_container"></div>
+     <div id="attach_file_wand_container" class="extension_container"></div>
+     <div id="sd_wand_container" class="extension_container"></div>
++    <div id="st-gpt-image-wand-container" class="extension_container">
++        <div id="st-gpt-image-wand-button" class="menu_button menu_button_icon" role="button" tabindex="0" title="GPT image settings">
++            <i class="fa-fw fa-solid fa-image"></i>
++            <span>GPT 生图</span>
++        </div>
++    </div>
+     <div id="caption_wand_container" class="extension_container"></div>
+     <div id="gallery_wand_container" class="extension_container"></div>
+     <div id="tts_wand_container" class="extension_container"></div>
 diff --git a/src/endpoints/openai.js b/src/endpoints/openai.js
 index e24f6c6..9d754ca 100644
 --- a/src/endpoints/openai.js

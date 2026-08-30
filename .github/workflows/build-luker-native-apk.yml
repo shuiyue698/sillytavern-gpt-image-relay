@@ -10,7 +10,8 @@ permissions:
   contents: write
 
 env:
-  APK_NAME: Luker-GPT-Image-v2.7.0-gpt.1-arm64.apk
+  APK_NAME: Luker-GPT-Image-v2.7.0-gpt.2-arm64.apk
+  LUKER_ANDROID_ABI: arm64-v8a
   NODEJS_MOBILE_ASSET_URL: https://github.com/funnycups/nodejs-mobile/releases/download/v1.0.1/nodejs-mobile-android.zip
   NODEJS_MOBILE_ASSET_NAME: nodejs-mobile-android.zip
   NODEJS_MOBILE_RUNTIME_MAJOR: "24"
@@ -39,7 +40,7 @@ jobs:
         run: |
           git -C luker apply --check "$GITHUB_WORKSPACE/apk/luker-native-gpt-image-v2.7.0.patch"
           git -C luker apply "$GITHUB_WORKSPACE/apk/luker-native-gpt-image-v2.7.0.patch"
-          test "$(node -p "require('./luker/package.json').version")" = "2.7.0-gpt.1"
+          test "$(node -p "require('./luker/package.json').version")" = "2.7.0-gpt.2"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -72,7 +73,7 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Luker-GPT-Image-v2.7.0-gpt.1-arm64
+          name: Luker-GPT-Image-v2.7.0-gpt.2-arm64
           path: dist/*
           if-no-files-found: error
           retention-days: 90
@@ -82,12 +83,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Luker GPT Image v2.7.0-gpt.1
+          name: Luker GPT Image v2.7.0-gpt.2
           body: |
-            Luker 2.7.0 native GPT image build for Android arm64.
+            Luker 2.7.0 native GPT image build for Android arm64-v8a.
 
             Package: com.luker.gptimage
             This APK can be installed alongside the official Luker app.
             Image generation is built in; no SillyTavern extension is required.
           files: dist/*
-
