@@ -4,8 +4,8 @@
 
 [下载 Luker GPT 生图版 APK](https://github.com/shuiyue698/sillytavern-gpt-image-relay/releases/latest)
 
-- 版本：`2.7.0-gpt.3`
-- 文件：`Luker-GPT-Image-v2.7.0-gpt.3-arm64.apk`
+- 版本：`2.7.0-gpt.4`
+- 文件：`Luker-GPT-Image-v2.7.0-gpt.4-arm64.apk`
 - 独立包名：`com.luker.gptimage`，可以与官方 Luker 同时安装
 - 完整构建说明见 [`apk/README.md`](apk/README.md)
 

@@ -49,26 +49,26 @@ index e38b2407738078625c12c4779b374b82477599ed..3ce76eb03e8d773e88caef00ac7aa728
      <string name="loading_webview">Service is ready. Loading interface...</string>
      <string name="loading_failed">Failed to start the service. Please restart the app.</string>
 diff --git a/package-lock.json b/package-lock.json
-index 58da68e961299cb72b161acfdd3cc5dc993a19ac..9e77bf65a76b94fd5f2ce881b12799594ce38d69 100644
+index 58da68e961299cb72b161acfdd3cc5dc993a19ac..43959e5b8e3aacdf68322504dc569607dbe0dbf1 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,12 +1,12 @@
  {
      "name": "luker",
 -    "version": "2.7.0",
-+    "version": "2.7.0-gpt.3",
++    "version": "2.7.0-gpt.4",
      "lockfileVersion": 3,
      "requires": true,
      "packages": {
          "": {
              "name": "luker",
 -            "version": "2.7.0",
-+            "version": "2.7.0-gpt.3",
++            "version": "2.7.0-gpt.4",
              "license": "AGPL-3.0",
              "dependencies": {
                  "@adobe/css-tools": "^4.4.4",
 diff --git a/package.json b/package.json
-index 284feabe6665a5983fe6e16217aade3ef62cd18c..ccb57d818242e7b21b03c3d32b2b10108e8afcdf 100644
+index 284feabe6665a5983fe6e16217aade3ef62cd18c..985a3f8931ea8b6a00ed22e55e19a4873606fea8 100644
 --- a/package.json
 +++ b/package.json
 @@ -133,7 +133,7 @@
@@ -76,7 +76,7 @@ index 284feabe6665a5983fe6e16217aade3ef62cd18c..ccb57d818242e7b21b03c3d32b2b1010
          "url": "https://github.com/funnycups/Luker.git"
      },
 -    "version": "2.7.0",
-+    "version": "2.7.0-gpt.3",
++    "version": "2.7.0-gpt.4",
      "scripts": {
          "init": "node src/server-init.js",
          "start": "node server.js",
@@ -101,7 +101,7 @@ index becf1bd221c34bb7b2fe9ebc40cd2a79b75e7381..468fb7a3ef77a8842c642c6a5603dab7
          window.addEventListener('load', (event) => {
              const documentHeight = () => {
 diff --git a/public/scripts/extensions/stable-diffusion/index.js b/public/scripts/extensions/stable-diffusion/index.js
-index c4b248eba6457a39c0ebe636a96946456065cd1d..817431de9c588dd166255538f9358d954947e7cb 100644
+index c4b248eba6457a39c0ebe636a96946456065cd1d..5e8fcb2146859e5bba5c3fa0fca5b743b1a80718 100644
 --- a/public/scripts/extensions/stable-diffusion/index.js
 +++ b/public/scripts/extensions/stable-diffusion/index.js
 @@ -86,6 +86,7 @@ const sources = {
@@ -349,7 +349,20 @@ index c4b248eba6457a39c0ebe636a96946456065cd1d..817431de9c588dd166255538f9358d95
  /**
   * Universal image generation via AIMLAPI:
   * - Builds the right request body for any model (OpenAI vs SD/Flux/Recraft).
-@@ -5866,6 +6013,10 @@ export async function init() {
+@@ -5138,6 +5285,12 @@ function isValidState() {
+             return secret_state[SECRET_KEYS.NOVEL];
+         case sources.openai:
+             return secret_state[SECRET_KEYS.OPENAI];
++        case sources.openai_compatible:
++            return Boolean(
++                String(extension_settings.sd.openai_compatible_url || '').trim()
++                && String(extension_settings.sd.openai_compatible_key || '').trim()
++                && String(extension_settings.sd.openai_compatible_model || extension_settings.sd.model || '').trim(),
++            );
+         case sources.aimlapi:
+             return secret_state[SECRET_KEYS.AIMLAPI];
+         case sources.comfy:
+@@ -5866,6 +6019,10 @@ export async function init() {
      $('#sd_auto_validate').on('click', validateAutoUrl);
      $('#sd_auto_url').on('input', onAutoUrlInput);
      $('#sd_auto_auth').on('input', onAutoAuthInput);

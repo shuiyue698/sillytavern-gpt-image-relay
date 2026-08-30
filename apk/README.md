@@ -3,14 +3,14 @@
 这是基于官方 `funnycups/Luker@v2.7.0` 制作的 Android arm64 原生生图版。
 
 - 应用名称：`Luker GPT 生图版`
-- 版本：`2.7.0-gpt.3`
+- 版本：`2.7.0-gpt.4`
 - 独立包名：`com.luker.gptimage`
 - 可以和官方 Luker 同时安装
 - 生图功能已经内置，不需要安装 SillyTavern 第三方扩展
 
 APK 在仓库的 Releases 页面下载，文件名为：
 
-`Luker-GPT-Image-v2.7.0-gpt.3-arm64.apk`
+`Luker-GPT-Image-v2.7.0-gpt.4-arm64.apk`
 
 ## 内置功能
 
