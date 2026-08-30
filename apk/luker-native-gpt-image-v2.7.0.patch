@@ -1,24 +1,5 @@
-From d6eb67fdc64073bb91c91695fe2257428a8380df Mon Sep 17 00:00:00 2001
-From: shuiyue698 <shuiyue698@users.noreply.github.com>
-Date: Sun, 30 Aug 2026 20:44:33 +0800
-Subject: [PATCH] Add built-in GPT image relay to Luker Android
-
----
- android-app/app/build.gradle.kts              |   12 +-
- .../app/src/main/res/values/strings.xml       |    2 +-
- package-lock.json                             |    4 +-
- package.json                                  |    2 +-
- public/index.html                             |    2 +
- public/scripts/native-gpt-image/index.js      | 1176 +++++++++++++++++
- public/scripts/native-gpt-image/style.css     |  307 +++++
- public/scripts/templates/wandMenu.html        |    6 +
- src/endpoints/openai.js                       |  130 +-
- 9 files changed, 1621 insertions(+), 20 deletions(-)
- create mode 100644 public/scripts/native-gpt-image/index.js
- create mode 100644 public/scripts/native-gpt-image/style.css
-
 diff --git a/android-app/app/build.gradle.kts b/android-app/app/build.gradle.kts
-index d340818..f1c9134 100644
+index d3408188d256c2b5a06957d4f79433dba2d0ad15..f1c91340e4dfba719ffa447b8157474c4a6fd00f 100644
 --- a/android-app/app/build.gradle.kts
 +++ b/android-app/app/build.gradle.kts
 @@ -13,6 +13,12 @@ val availableNodeAbis = jniLibsDir
@@ -55,7 +36,7 @@ index d340818..f1c9134 100644
                  // Safe default for most real devices when libnode ABI set has not been prepared yet.
                  abiFilters += "arm64-v8a"
 diff --git a/android-app/app/src/main/res/values/strings.xml b/android-app/app/src/main/res/values/strings.xml
-index e38b240..3ce76eb 100644
+index e38b2407738078625c12c4779b374b82477599ed..3ce76eb03e8d773e88caef00ac7aa7287aafede8 100644
 --- a/android-app/app/src/main/res/values/strings.xml
 +++ b/android-app/app/src/main/res/values/strings.xml
 @@ -2,7 +2,7 @@
@@ -68,26 +49,26 @@ index e38b240..3ce76eb 100644
      <string name="loading_webview">Service is ready. Loading interface...</string>
      <string name="loading_failed">Failed to start the service. Please restart the app.</string>
 diff --git a/package-lock.json b/package-lock.json
-index 58da68e..4ea048e 100644
+index 58da68e961299cb72b161acfdd3cc5dc993a19ac..9e77bf65a76b94fd5f2ce881b12799594ce38d69 100644
 --- a/package-lock.json
 +++ b/package-lock.json
 @@ -1,12 +1,12 @@
  {
      "name": "luker",
 -    "version": "2.7.0",
-+    "version": "2.7.0-gpt.2",
++    "version": "2.7.0-gpt.3",
      "lockfileVersion": 3,
      "requires": true,
      "packages": {
          "": {
              "name": "luker",
 -            "version": "2.7.0",
-+            "version": "2.7.0-gpt.2",
++            "version": "2.7.0-gpt.3",
              "license": "AGPL-3.0",
              "dependencies": {
                  "@adobe/css-tools": "^4.4.4",
 diff --git a/package.json b/package.json
-index 284feab..7fe4fac 100644
+index 284feabe6665a5983fe6e16217aade3ef62cd18c..ccb57d818242e7b21b03c3d32b2b10108e8afcdf 100644
 --- a/package.json
 +++ b/package.json
 @@ -133,7 +133,7 @@
@@ -95,12 +76,12 @@ index 284feab..7fe4fac 100644
          "url": "https://github.com/funnycups/Luker.git"
      },
 -    "version": "2.7.0",
-+    "version": "2.7.0-gpt.2",
++    "version": "2.7.0-gpt.3",
      "scripts": {
          "init": "node src/server-init.js",
          "start": "node server.js",
 diff --git a/public/index.html b/public/index.html
-index becf1bd..468fb7a 100644
+index becf1bd221c34bb7b2fe9ebc40cd2a79b75e7381..468fb7a3ef77a8842c642c6a5603dab77fe43099 100644
 --- a/public/index.html
 +++ b/public/index.html
 @@ -47,6 +47,7 @@
@@ -119,12 +100,306 @@ index becf1bd..468fb7a 100644
      <script>
          window.addEventListener('load', (event) => {
              const documentHeight = () => {
+diff --git a/public/scripts/extensions/stable-diffusion/index.js b/public/scripts/extensions/stable-diffusion/index.js
+index c4b248eba6457a39c0ebe636a96946456065cd1d..817431de9c588dd166255538f9358d954947e7cb 100644
+--- a/public/scripts/extensions/stable-diffusion/index.js
++++ b/public/scripts/extensions/stable-diffusion/index.js
+@@ -86,6 +86,7 @@ const sources = {
+     novel: 'novel',
+     vlad: 'vlad',
+     openai: 'openai',
++    openai_compatible: 'openai_compatible',
+     aimlapi: 'aimlapi',
+     comfy: 'comfy',
+     togetherai: 'togetherai',
+@@ -338,6 +339,9 @@ const defaultSettings = {
+     openai_quality: 'standard',
+     openai_quality_gpt: 'auto',
+     openai_duration: '8',
++    openai_compatible_url: '',
++    openai_compatible_key: '',
++    openai_compatible_model: 'gpt-image-1',
+ 
+     style: 'Default',
+     styles: defaultStyles,
+@@ -552,6 +556,13 @@ async function loadSettings() {
+     $('#sd_openai_quality').val(extension_settings.sd.openai_quality);
+     $('#sd_openai_quality_gpt').val(extension_settings.sd.openai_quality_gpt);
+     $('#sd_openai_duration').val(extension_settings.sd.openai_duration);
++    $('#sd_openai_compatible_url').val(extension_settings.sd.openai_compatible_url);
++    $('#sd_openai_compatible_key').val(extension_settings.sd.openai_compatible_key);
++    $('#sd_openai_compatible_model').val(extension_settings.sd.openai_compatible_model);
++    if (extension_settings.sd.source === sources.openai_compatible) {
++        extension_settings.sd.model = String(extension_settings.sd.openai_compatible_model || extension_settings.sd.model || 'gpt-image-1').trim();
++        $('#sd_openai_compatible_model').val(extension_settings.sd.model);
++    }
+     $('#sd_comfy_type').val(extension_settings.sd.comfy_type);
+     $('#sd_comfy_url').val(extension_settings.sd.comfy_url);
+     $('#sd_comfy_prompt').val(extension_settings.sd.comfy_prompt);
+@@ -1151,6 +1162,10 @@ async function onSourceChange() {
+     extension_settings.sd.sampler = null;
+     extension_settings.sd.scheduler = null;
+     extension_settings.sd.vae = null;
++    if (extension_settings.sd.source === sources.openai_compatible) {
++        extension_settings.sd.model = String(extension_settings.sd.openai_compatible_model || 'gpt-image-1').trim();
++        $('#sd_openai_compatible_model').val(extension_settings.sd.model);
++    }
+     toggleSourceControls();
+     saveSettingsDebounced();
+     await loadSettingOptions();
+@@ -1182,6 +1197,23 @@ async function onOpenAiDurationSelect() {
+     saveSettingsDebounced();
+ }
+ 
++function onOpenAiCompatibleUrlInput() {
++    extension_settings.sd.openai_compatible_url = String($('#sd_openai_compatible_url').val() || '').trim();
++    saveSettingsDebounced();
++}
++
++function onOpenAiCompatibleKeyInput() {
++    extension_settings.sd.openai_compatible_key = String($('#sd_openai_compatible_key').val() || '').trim();
++    saveSettingsDebounced();
++}
++
++function onOpenAiCompatibleModelInput() {
++    extension_settings.sd.openai_compatible_model = String($('#sd_openai_compatible_model').val() || '').trim();
++    extension_settings.sd.model = extension_settings.sd.openai_compatible_model;
++    $('#sd_model').val(extension_settings.sd.model);
++    saveSettingsDebounced();
++}
++
+ async function onViewAnlasClick() {
+     const result = await loadNovelSubscriptionData();
+ 
+@@ -1380,6 +1412,34 @@ async function validateAutoUrl() {
+     }
+ }
+ 
++async function validateOpenAiCompatibleUrl() {
++    try {
++        const url = String(extension_settings.sd.openai_compatible_url || '').trim();
++        const key = String(extension_settings.sd.openai_compatible_key || '').trim();
++        if (!url) throw new Error('URL is not set.');
++        if (!key) throw new Error('API key is not set.');
++        const result = await fetch('/api/openai/test-image-connection', {
++            method: 'POST',
++            headers: getRequestHeaders(),
++            body: JSON.stringify({ api_url: url, api_key: key }),
++        });
++        if (!result.ok) throw new Error(await result.text() || 'Connection failed.');
++        const data = await result.json();
++        const models = Array.isArray(data?.models) ? data.models : [];
++        if (models.length) {
++            const compatibleModel = String(extension_settings.sd.openai_compatible_model || '').trim();
++            const model = models.find(item => String(item) === compatibleModel) || models[0];
++            extension_settings.sd.openai_compatible_model = String(model);
++            extension_settings.sd.model = String(model);
++            $('#sd_openai_compatible_model').val(extension_settings.sd.openai_compatible_model);
++            await loadModels();
++        }
++        toastr.success(`OpenAI-compatible relay connected${models.length ? ` (${models.length} models)` : ''}.`);
++    } catch (error) {
++        toastr.error(`Could not validate OpenAI-compatible relay: ${error.message}`);
++    }
++}
++
+ async function validateSdcppUrl() {
+     try {
+         if (!extension_settings.sd.sdcpp_url) {
+@@ -1500,6 +1560,10 @@ async function validateComfyRunPodUrl() {
+ async function onModelChange() {
+     const selectedModel = $('#sd_model').find(':selected');
+     extension_settings.sd.model = selectedModel.val();
++    if (extension_settings.sd.source === sources.openai_compatible && extension_settings.sd.model) {
++        extension_settings.sd.openai_compatible_model = String(extension_settings.sd.model);
++        $('#sd_openai_compatible_model').val(extension_settings.sd.openai_compatible_model);
++    }
+     saveSettingsDebounced();
+ 
+     if (extension_settings.sd.model && extension_settings.sd.source === sources.electronhub) {
+@@ -1691,6 +1755,9 @@ async function loadSamplers() {
+         case sources.openai:
+             samplers = ['N/A'];
+             break;
++        case sources.openai_compatible:
++            samplers = ['N/A'];
++            break;
+         case sources.aimlapi:
+             samplers = ['N/A'];
+             break;
+@@ -1924,6 +1991,9 @@ async function loadModels() {
+         case sources.openai:
+             models = await loadOpenAiModels();
+             break;
++        case sources.openai_compatible:
++            models = await loadOpenAiCompatibleModels();
++            break;
+         case sources.aimlapi:
+             models = await loadAimlapiModels();
+             break;
+@@ -2343,6 +2413,26 @@ async function loadOpenAiModels() {
+     ];
+ }
+ 
++async function loadOpenAiCompatibleModels() {
++    const url = String(extension_settings.sd.openai_compatible_url || '').trim();
++    const key = String(extension_settings.sd.openai_compatible_key || '').trim();
++    if (!url || !key) return [];
++    try {
++        const result = await fetch('/api/openai/test-image-connection', {
++            method: 'POST',
++            headers: getRequestHeaders(),
++            body: JSON.stringify({ api_url: url, api_key: key }),
++        });
++        if (!result.ok) return [];
++        const data = await result.json();
++        return (Array.isArray(data?.models) ? data.models : [])
++            .map(model => ({ value: String(model), text: String(model) }));
++    } catch (error) {
++        console.warn('Failed to load OpenAI-compatible image models:', error);
++        return [];
++    }
++}
++
+ async function loadAimlapiModels() {
+     $('#sd_aimlapi_key').toggleClass('success', !!secret_state[SECRET_KEYS.AIMLAPI]);
+ 
+@@ -2540,6 +2630,9 @@ async function loadSchedulers() {
+         case sources.openai:
+             schedulers = ['N/A'];
+             break;
++        case sources.openai_compatible:
++            schedulers = ['N/A'];
++            break;
+         case sources.aimlapi:
+             schedulers = ['N/A'];
+             break;
+@@ -2660,6 +2753,9 @@ async function loadVaes() {
+         case sources.openai:
+             vaes = ['N/A'];
+             break;
++        case sources.openai_compatible:
++            vaes = ['N/A'];
++            break;
+         case sources.aimlapi:
+             vaes = ['N/A'];
+             break;
+@@ -3439,6 +3535,9 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
+                 case sources.openai:
+                     inner = await generateOpenAiImage(prefixedPrompt, signal);
+                     break;
++                case sources.openai_compatible:
++                    inner = await generateOpenAiCompatibleImage(prefixedPrompt, signal);
++                    break;
+                 case sources.aimlapi:
+                     inner = await generateAimlapiImage(prefixedPrompt, signal);
+                     break;
+@@ -4211,6 +4310,54 @@ async function generateOpenAiImage(prompt, signal) {
+     }
+ }
+ 
++/**
++ * Generates an image through a user-configured OpenAI-compatible relay.
++ * The request stays on the SillyTavern host so mobile WebViews do not need
++ * CORS access to the relay.
++ */
++async function generateOpenAiCompatibleImage(prompt, signal) {
++    const apiUrl = String(extension_settings.sd.openai_compatible_url || '').trim();
++    const apiKey = String(extension_settings.sd.openai_compatible_key || '').trim();
++    const model = String(extension_settings.sd.openai_compatible_model || extension_settings.sd.model || '').trim();
++    if (!apiUrl) throw new Error('OpenAI-compatible image API URL is not set.');
++    if (!apiKey) throw new Error('OpenAI-compatible API key is not set.');
++    if (!model) throw new Error('OpenAI-compatible image model is not set.');
++
++    const result = await fetch('/api/openai/generate-image', {
++        method: 'POST',
++        headers: getRequestHeaders(),
++        signal,
++        body: JSON.stringify({
++            api_url: apiUrl,
++            api_key: apiKey,
++            prompt,
++            model,
++            size: `${extension_settings.sd.width}x${extension_settings.sd.height}`,
++            n: 1,
++            response_format: 'b64_json',
++        }),
++    });
++    if (!result.ok) throw new Error(await result.text() || 'OpenAI-compatible relay returned an error.');
++
++    const payload = await result.json();
++    const item = Array.isArray(payload?.data)
++        ? payload.data[0]
++        : Array.isArray(payload?.images)
++            ? payload.images[0]
++            : payload?.data;
++    const imageData = item?.b64_json || item?.base64 || item?.image
++        || (typeof item === 'string' && !/^https?:\/\//i.test(item) ? item : '');
++    if (imageData) return { format: 'png', data: String(imageData).replace(/^data:image\/[^;]+;base64,/, '') };
++    const imageUrl = typeof item === 'string' && /^https?:\/\//i.test(item) ? item : item?.url;
++    if (typeof imageUrl === 'string' && /^https?:\/\//i.test(imageUrl)) {
++        const imageResponse = await fetch(imageUrl, { signal });
++        if (!imageResponse.ok) throw new Error('Could not download the generated image URL.');
++        const dataUrl = await getBase64Async(await imageResponse.blob());
++        return { format: 'png', data: dataUrl.split(',')[1] || '' };
++    }
++    throw new Error('OpenAI-compatible relay returned no image data.');
++}
++
+ /**
+  * Universal image generation via AIMLAPI:
+  * - Builds the right request body for any model (OpenAI vs SD/Flux/Recraft).
+@@ -5866,6 +6013,10 @@ export async function init() {
+     $('#sd_auto_validate').on('click', validateAutoUrl);
+     $('#sd_auto_url').on('input', onAutoUrlInput);
+     $('#sd_auto_auth').on('input', onAutoAuthInput);
++    $('#sd_openai_compatible_validate').on('click', validateOpenAiCompatibleUrl);
++    $('#sd_openai_compatible_url').on('input', onOpenAiCompatibleUrlInput);
++    $('#sd_openai_compatible_key').on('input', onOpenAiCompatibleKeyInput);
++    $('#sd_openai_compatible_model').on('input', onOpenAiCompatibleModelInput);
+     $('#sd_sdcpp_validate').on('click', validateSdcppUrl);
+     $('#sd_sdcpp_url').on('input', onSdcppUrlInput);
+     $('#sd_drawthings_validate').on('click', validateDrawthingsUrl);
+diff --git a/public/scripts/extensions/stable-diffusion/settings.html b/public/scripts/extensions/stable-diffusion/settings.html
+index 4fcafdb026858eff683da52db1062c633b1f5f3a..6e113cd8802a90a58fe607062d3b4f8672566cd2 100644
+--- a/public/scripts/extensions/stable-diffusion/settings.html
++++ b/public/scripts/extensions/stable-diffusion/settings.html
+@@ -54,6 +54,7 @@
+                 <option value="nanogpt">NanoGPT</option>
+                 <option value="novel">NovelAI Diffusion</option>
+                 <option value="openai">OpenAI</option>
++                <option value="openai_compatible">OpenAI 兼容中转站</option>
+                 <option value="openrouter">OpenRouter</option>
+                 <option value="pollinations">Pollinations</option>
+                 <option value="vlad">SD.Next (vladmandic)</option>
+@@ -81,6 +82,21 @@
+                 <!-- (Original Text)<b>Important:</b> run SD Web UI with the <tt>--api</tt> flag! The server must be accessible from the Luker host machine. -->
+                 <i><b data-i18n="Important:">Important:</b></i><i data-i18n="sd_auto_auth_warning_1"> run SD Web UI with the </i><i><tt>--api</tt></i><i data-i18n="sd_auto_auth_warning_2"> flag! The server must be accessible from the Luker host machine.</i>
+             </div>
++            <div data-sd-source="openai_compatible">
++                <label for="sd_openai_compatible_url">OpenAI-compatible image API URL</label>
++                <div class="flex-container flexnowrap">
++                    <input id="sd_openai_compatible_url" type="text" class="text_pole" placeholder="https://relay.example/v1" autocomplete="url" />
++                    <div id="sd_openai_compatible_validate" class="menu_button menu_button_icon">
++                        <i class="fa-solid fa-check"></i>
++                        <span>Connect</span>
++                    </div>
++                </div>
++                <label for="sd_openai_compatible_key">API key</label>
++                <input id="sd_openai_compatible_key" type="password" class="text_pole" placeholder="API key" autocomplete="off" />
++                <label for="sd_openai_compatible_model">Image model</label>
++                <input id="sd_openai_compatible_model" type="text" class="text_pole" placeholder="gpt-image-1" autocomplete="off" />
++                <i>Use an OpenAI-compatible <code>/v1/images/generations</code> endpoint.</i>
++            </div>
+             <div data-sd-source="sdcpp">
+                 <label for="sd_sdcpp_url">stable-diffusion.cpp URL</label>
+                 <div class="flex-container flexnowrap">
 diff --git a/public/scripts/native-gpt-image/index.js b/public/scripts/native-gpt-image/index.js
 new file mode 100644
-index 0000000..6d14662
+index 0000000000000000000000000000000000000000..fa0b7de0b1f97ec68a64602f5448f32635055fe9
 --- /dev/null
 +++ b/public/scripts/native-gpt-image/index.js
-@@ -0,0 +1,1176 @@
+@@ -0,0 +1,1362 @@
 +const EXTENSION_ID = 'sillytavern-gpt-image-relay';
 +// Keep the standard SillyTavern surface separate from the older TauriTavern
 +// build. Both builds used the same id in early releases, which made one
@@ -134,8 +409,13 @@ index 0000000..6d14662
 +const REFERENCE_STORAGE_KEY = `${EXTENSION_ID}:reference-image`;
 +const MODEL_CACHE_KEY = `${EXTENSION_ID}:models`;
 +const H3_MODEL_PRESETS = ['minimax-h3', 'gpt-image-2'];
++const IMAGE_SOURCE_OPTIONS = [
++    ['openai_compatible', 'OpenAI 兼容中转站'],
++    ['openai_official', 'OpenAI 官方'],
++];
 +
 +const DEFAULT_SETTINGS = {
++    apiSource: 'openai_compatible',
 +    apiUrl: '',
 +    apiKey: '',
 +    imageModel: 'gpt-image-2',
@@ -176,6 +456,9 @@ index 0000000..6d14662
 +let activationPromise = null;
 +let mountObserver = null;
 +let wandObserver = null;
++let extensionsManagerObserver = null;
++let wandBridgeBound = false;
++let lastWandActivation = 0;
 +let generationBusy = false;
 +let relayProxyAvailable = null;
 +
@@ -238,6 +521,9 @@ index 0000000..6d14662
 +            ...DEFAULT_SETTINGS,
 +            ...(saved && typeof saved === 'object' ? saved : {}),
 +        };
++        if (!IMAGE_SOURCE_OPTIONS.some(([value]) => value === settings.apiSource)) {
++            settings.apiSource = DEFAULT_SETTINGS.apiSource;
++        }
 +        allSettings[EXTENSION_ID] = settings;
 +    } catch (error) {
 +        console.warn(`[${EXTENSION_ID}] settings could not be loaded`, error);
@@ -284,10 +570,10 @@ index 0000000..6d14662
 +}
 +
 +function setApiStatus(message, kind = '') {
-+    const node = getElement('tt-gpt-api-status');
-+    if (!node) return;
-+    node.textContent = message || '';
-+    node.dataset.kind = kind;
++    document.querySelectorAll('#tt-gpt-api-status, [data-manager-status]').forEach(node => {
++        node.textContent = message || '';
++        node.dataset.kind = kind;
++    });
 +}
 +
 +function getReferenceImage() {
@@ -333,7 +619,10 @@ index 0000000..6d14662
 +}
 +
 +function getEffectiveApiUrl() {
-+    return normalizeApiUrl(settings?.apiUrl) || getActiveCustomApi();
++    const configured = normalizeApiUrl(settings?.apiUrl);
++    if (configured) return configured;
++    if (settings?.apiSource === 'openai_official') return 'https://api.openai.com/v1';
++    return getActiveCustomApi();
 +}
 +
 +function endpointCandidates(path) {
@@ -515,6 +804,7 @@ index 0000000..6d14662
 +        if (!settings.imageModel) settings.imageModel = chooseDefaultImageModel(modelIds);
 +        if (!settings.analysisModel) settings.analysisModel = chooseDefaultAnalysisModel(modelIds);
 +        fillModelSelects();
++        document.querySelectorAll('[data-tt-gpt-manager="true"]').forEach(fillManagerModelSelect);
 +        saveSettings();
 +        setApiStatus(`${modelIds.length} 个模型可用`, 'success');
 +        if (!silent) notify('success', `已读取 ${modelIds.length} 个模型，可以在下拉框选择。`);
@@ -536,11 +826,12 @@ index 0000000..6d14662
 +    } catch { /* ignore invalid cache */ }
 +}
 +
-+async function testConnection() {
-+    const button = getElement('tt-gpt-api-test');
++async function testConnection(buttonOverride = null) {
++    const button = buttonOverride || getElement('tt-gpt-api-test');
 +    if (button) button.disabled = true;
 +    setApiStatus('正在连接…', 'pending');
 +    try {
++        if (!getEffectiveApiUrl()) throw new Error('Image API URL is required');
 +        const ids = await refreshModels({ silent: true });
 +        if (lastModelError) throw lastModelError;
 +        if (!ids.length) {
@@ -1010,6 +1301,7 @@ index 0000000..6d14662
 +    const caption = getElement('tt-gpt-caption');
 +    if (caption) caption.value = settings.referenceCaption || '';
 +    fillModelSelects();
++    document.querySelectorAll('[data-tt-gpt-manager="true"]').forEach(syncManagerCard);
 +}
 +
 +function handleSettingChange(element) {
@@ -1065,7 +1357,7 @@ index 0000000..6d14662
 +        const now = Date.now();
 +        if (now - lastActivation < 400) return;
 +        lastActivation = now;
-+        root.querySelector('.tt-gpt-settings-button')?.click();
++        root.__ttGptOpenSettings?.();
 +    };
 +    button.addEventListener('pointerup', openSettings, true);
 +    button.addEventListener('click', openSettings);
@@ -1073,6 +1365,169 @@ index 0000000..6d14662
 +        if (event.key === 'Enter' || event.key === ' ') openSettings(event);
 +    });
 +    return true;
++}
++
++function openSettingsFromWand(event) {
++    const target = event?.target;
++    const button = typeof target?.closest === 'function'
++        ? target.closest('#st-gpt-image-wand-button')
++        : null;
++    if (!button) return;
++    event.preventDefault();
++    event.stopPropagation();
++    const now = Date.now();
++    if (now - lastWandActivation < 400) return;
++    lastWandActivation = now;
++    let root = getRoot();
++    if (!root) {
++        try {
++            mountUi();
++            root = getRoot();
++        } catch (error) {
++            reportStartupError(error);
++            return;
++        }
++    }
++    root?.__ttGptOpenSettings?.();
++}
++
++function bindWandBridge() {
++    if (wandBridgeBound || typeof document?.addEventListener !== 'function') return;
++    wandBridgeBound = true;
++    // Capture on document so mobile menu handlers cannot swallow the tap
++    // before the native panel gets a chance to open.
++    document.addEventListener('pointerup', openSettingsFromWand, true);
++    document.addEventListener('click', openSettingsFromWand, true);
++}
++
++function managerSourceOptions() {
++    return IMAGE_SOURCE_OPTIONS
++        .map(([value, label]) => `<option value="${value}">${label}</option>`)
++        .join('');
++}
++
++function fillManagerModelSelect(card) {
++    const select = card?.querySelector('[data-manager-model-select]');
++    if (!select) return;
++    const selected = String(settings?.imageModel || '').trim();
++    const values = [...new Set([...H3_MODEL_PRESETS, ...modelIds])];
++    if (selected && !values.includes(selected)) values.unshift(selected);
++    select.replaceChildren();
++    for (const value of values) {
++        const option = document.createElement('option');
++        option.value = value;
++        option.textContent = value;
++        select.appendChild(option);
++    }
++    if (selected) select.value = selected;
++}
++
++function syncManagerCard(card) {
++    if (!card || !settings) return;
++    card.querySelectorAll('[data-manager-setting]').forEach(element => {
++        writeFormValue(element, settings[element.dataset.managerSetting]);
++    });
++    fillManagerModelSelect(card);
++}
++
++function handleManagerSettingChange(element) {
++    const key = element?.dataset?.managerSetting;
++    if (!key || !settings) return;
++    settings[key] = readFormValue(element);
++    if (key === 'apiUrl' || key === 'apiKey' || key === 'apiSource') {
++        setApiStatus('Configuration changed. Test the connection before generating.', 'pending');
++    }
++    saveSettings();
++    const mainElement = getRoot()?.querySelector(`[data-setting="${key}"]`);
++    writeFormValue(mainElement, settings[key]);
++}
++
++function openSettingsPanel() {
++    let root = getRoot();
++    if (!root) {
++        try {
++            mountUi();
++            root = getRoot();
++        } catch (error) {
++            reportStartupError(error);
++            return;
++        }
++    }
++    root?.__ttGptOpenSettings?.();
++}
++
++function buildManagerCard() {
++    const card = document.createElement('section');
++    card.className = 'tt-gpt-manager-card';
++    card.dataset.ttGptManager = 'true';
++    card.innerHTML = `
++        <div class="tt-gpt-manager-heading"><strong>内置 GPT 生图</strong><span>OpenAI 兼容中转站</span></div>
++        <div class="tt-gpt-manager-grid">
++            <label>Source<select data-manager-setting="apiSource">${managerSourceOptions()}</select></label>
++            <label>Image model<select data-manager-model-select></select></label>
++            <label>Image API URL<input type="url" data-manager-setting="apiUrl" placeholder="https://relay.example/v1" autocomplete="url"></label>
++            <label>API key<input type="password" data-manager-setting="apiKey" placeholder="API key" autocomplete="off"></label>
++        </div>
++        <div class="tt-gpt-manager-actions">
++            <button type="button" class="menu_button" data-manager-action="test">Test connection</button>
++            <button type="button" class="menu_button" data-manager-action="refresh">Refresh models</button>
++            <button type="button" class="menu_button" data-manager-action="open">Open controls</button>
++            <span data-manager-status role="status" aria-live="polite"></span>
++        </div>`;
++    card.addEventListener('input', event => {
++        const element = event.target.closest?.('[data-manager-setting]');
++        if (element) handleManagerSettingChange(element);
++    });
++    card.addEventListener('change', event => {
++        const element = event.target.closest?.('[data-manager-setting]');
++        if (element) handleManagerSettingChange(element);
++        const select = event.target.closest?.('[data-manager-model-select]');
++        if (select?.value) {
++            settings.imageModel = select.value;
++            saveSettings();
++            syncFormFromSettings();
++        }
++    });
++    card.addEventListener('click', event => {
++        const button = event.target.closest?.('[data-manager-action]');
++        if (!button) return;
++        event.preventDefault();
++        event.stopPropagation();
++        const action = button.dataset.managerAction;
++        if (action === 'test') void testConnection(button);
++        if (action === 'refresh') void refreshModels();
++        if (action === 'open') openSettingsPanel();
++    });
++    syncManagerCard(card);
++    return card;
++}
++
++function injectExtensionsManagerCard() {
++    if (!settings) return;
++    document.querySelectorAll('.extensions_info').forEach(container => {
++        if (container.querySelector('[data-tt-gpt-manager="true"]')) return;
++        const card = buildManagerCard();
++        const toolbar = container.querySelector('.extensions_toolbar');
++        if (toolbar) toolbar.insertAdjacentElement('afterend', card);
++        else container.prepend(card);
++    });
++}
++
++function bindExtensionsManagerBridge() {
++    if (typeof document?.querySelectorAll !== 'function') return;
++    injectExtensionsManagerCard();
++    const target = document.body || document.documentElement;
++    if (!target || typeof MutationObserver !== 'function') return;
++    extensionsManagerObserver?.disconnect();
++    extensionsManagerObserver = new MutationObserver(mutations => {
++        const needsScan = mutations.some(mutation => [...mutation.addedNodes].some(node => {
++            if (node.nodeType !== 1) return false;
++            return node.matches?.('.extensions_info, .popup, .popup_holder')
++                || node.querySelector?.('.extensions_info');
++        }));
++        if (needsScan) injectExtensionsManagerCard();
++    });
++    extensionsManagerObserver.observe(target, { childList: true, subtree: true });
 +}
 +
 +function scheduleWandButtonMount(root) {
@@ -1095,6 +1550,9 @@ index 0000000..6d14662
 +
 +function buildUi() {
 +    const root = document.createElement('div');
++    const sourceOptions = IMAGE_SOURCE_OPTIONS
++        .map(([value, label]) => `<option value="${value}">${label}</option>`)
++        .join('');
 +    root.id = ROOT_ID;
 +    root.innerHTML = `
 +        <div class="tt-gpt-toolbar" role="toolbar" aria-label="GPT image">
@@ -1106,7 +1564,7 @@ index 0000000..6d14662
 +        <section class="tt-gpt-panel" data-tt-mobile-surface="free-window" aria-label="GPT image controls">
 +            <header class="tt-gpt-panel-header" data-drag-handle><strong>GPT Image</strong><div class="tt-gpt-header-actions"><button type="button" data-action="generate" title="Generate"><i class="fa-solid fa-wand-magic-sparkles"></i></button><button type="button" data-action="minimize" title="Minimize"><i class="fa-solid fa-minus"></i></button></div></header>
 +            <div class="tt-gpt-panel-body">
-+                <div class="tt-gpt-grid"><label>Image API URL<input type="url" data-setting="apiUrl" placeholder="https://.../v1" autocomplete="url"></label><label>Image API key<input type="password" data-setting="apiKey" placeholder="API key" autocomplete="off"></label></div>
++                <div class="tt-gpt-grid"><label>Image source<select data-setting="apiSource">${sourceOptions}</select></label><label>Image API URL<input type="url" data-setting="apiUrl" placeholder="https://relay.example/v1" autocomplete="url"></label><label>Image API key<input type="password" data-setting="apiKey" placeholder="API key" autocomplete="off"></label></div>
 +                <div class="tt-gpt-inline"><button type="button" class="menu_button" id="tt-gpt-api-test" data-action="test">Test connection</button><button type="button" class="menu_button" data-action="refresh-models">Refresh models</button><span id="tt-gpt-api-status" aria-live="polite"></span></div>
 +                <div class="tt-gpt-grid"><label>Image model<select id="tt-gpt-image-model-select" data-model-select="imageModel"></select></label><label>Image model (custom)<input type="text" data-setting="imageModel" placeholder="gpt-image-1"></label><label>Analysis model<select id="tt-gpt-analysis-model-select" data-model-select="analysisModel"></select></label><label>Analysis model (custom)<input type="text" data-setting="analysisModel" placeholder="gpt-5.6-luna"></label><label>Resolution<select data-setting="resolution">${RESOLUTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Style<select data-setting="style">${STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Content source<select data-setting="sourceMode"><option value="card_text">Character card + current text</option><option value="interface_text">Current interface text only</option></select></label><label class="tt-gpt-checkbox"><input type="checkbox" data-setting="autoAnalyze"> Auto-analyze reference</label></div>
 +                <label>Additional prompt<textarea data-setting="manualPrompt" rows="3" placeholder="Added to every image request"></textarea></label>
@@ -1132,8 +1590,8 @@ index 0000000..6d14662
 +    };
 +    let lastSettingsToggle = 0;
 +    const toggleSettings = event => {
-+        event.preventDefault();
-+        event.stopPropagation();
++        event?.preventDefault?.();
++        event?.stopPropagation?.();
 +        const now = Date.now();
 +        if (now - lastSettingsToggle < 250) return;
 +        lastSettingsToggle = now;
@@ -1147,6 +1605,7 @@ index 0000000..6d14662
 +        panel.style.zIndex = '2147483000';
 +        settingsButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
 +    };
++    root.__ttGptOpenSettings = () => toggleSettings();
 +    settingsButton?.setAttribute('aria-expanded', 'false');
 +    const dispatchAction = event => {
 +        const button = closestElement(event.target, 'button');
@@ -1291,6 +1750,8 @@ index 0000000..6d14662
 +    if (!hostContext) console.warn(`[${EXTENSION_ID}] SillyTavern context is not ready; mounting UI anyway`);
 +    settings ||= { ...DEFAULT_SETTINGS };
 +    loadSettings();
++    bindWandBridge();
++    bindExtensionsManagerBridge();
 +    scheduleUiMount();
 +}
 +
@@ -1303,10 +1764,10 @@ index 0000000..6d14662
 +void activate().catch(reportStartupError);
 diff --git a/public/scripts/native-gpt-image/style.css b/public/scripts/native-gpt-image/style.css
 new file mode 100644
-index 0000000..2966b6b
+index 0000000000000000000000000000000000000000..c7b6c12921cc10b92d321bb2067e081f11b92ecc
 --- /dev/null
 +++ b/public/scripts/native-gpt-image/style.css
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,381 @@
 +#st-gpt-image-relay {
 +    --tt-gpt-accent: var(--SmartThemeQuoteColor, #78b7ff);
 +    --tt-gpt-panel-bg: var(--SmartThemeBlurTintColor, rgba(24, 28, 36, 0.98));
@@ -1614,8 +2075,82 @@ index 0000000..2966b6b
 +        align-self: stretch;
 +    }
 +}
++
++/* Inline configuration shown by the host's Extensions manager. */
++.extensions_info .tt-gpt-manager-card {
++    display: flex;
++    flex-direction: column;
++    gap: 8px;
++    margin: 0 0 10px;
++    padding: 9px;
++    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
++    border-radius: 7px;
++    background: var(--SmartThemeBlurTintColor, rgba(24, 28, 36, 0.45));
++}
++
++.extensions_info .tt-gpt-manager-heading,
++.extensions_info .tt-gpt-manager-actions {
++    display: flex;
++    align-items: center;
++    gap: 7px;
++    flex-wrap: wrap;
++}
++
++.extensions_info .tt-gpt-manager-heading strong {
++    flex: 1;
++}
++
++.extensions_info .tt-gpt-manager-heading span {
++    opacity: 0.75;
++    font-size: 0.85em;
++}
++
++.extensions_info .tt-gpt-manager-grid {
++    display: grid;
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++    gap: 7px;
++}
++
++.extensions_info .tt-gpt-manager-grid label {
++    display: flex;
++    flex-direction: column;
++    gap: 4px;
++    min-width: 0;
++}
++
++.extensions_info .tt-gpt-manager-grid input,
++.extensions_info .tt-gpt-manager-grid select {
++    box-sizing: border-box;
++    width: 100%;
++    min-width: 0;
++}
++
++.extensions_info .tt-gpt-manager-actions [data-manager-status] {
++    min-height: 1.2em;
++    overflow-wrap: anywhere;
++    opacity: 0.85;
++}
++
++.extensions_info .tt-gpt-manager-actions [data-manager-status][data-kind="success"] {
++    color: #74d394;
++}
++
++.extensions_info .tt-gpt-manager-actions [data-manager-status][data-kind="error"] {
++    color: #ff8d8d;
++}
++
++@media (max-width: 620px) {
++    .extensions_info .tt-gpt-manager-grid {
++        grid-template-columns: minmax(0, 1fr);
++    }
++
++    .extensions_info .tt-gpt-manager-grid input,
++    .extensions_info .tt-gpt-manager-grid select {
++        font-size: 16px;
++    }
++}
 diff --git a/public/scripts/templates/wandMenu.html b/public/scripts/templates/wandMenu.html
-index 5382c4a..8c45285 100644
+index 5382c4afbbf90366f8e8227eb9b0522e6f8ca0e6..8c4528501f6bf344daa98c81e39d91c55b2ea05c 100644
 --- a/public/scripts/templates/wandMenu.html
 +++ b/public/scripts/templates/wandMenu.html
 @@ -2,6 +2,12 @@
@@ -1632,15 +2167,15 @@ index 5382c4a..8c45285 100644
      <div id="gallery_wand_container" class="extension_container"></div>
      <div id="tts_wand_container" class="extension_container"></div>
 diff --git a/src/endpoints/openai.js b/src/endpoints/openai.js
-index e24f6c6..9d754ca 100644
+index e24f6c6dc2d24b222c28dadd5deb8558b30d7ff9..9376f0b372ffd1f489f3acae64494f9e31715d85 100644
 --- a/src/endpoints/openai.js
 +++ b/src/endpoints/openai.js
-@@ -12,15 +12,77 @@ import { AIMLAPI_HEADERS, OPENROUTER_HEADERS, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT
+@@ -12,15 +12,78 @@ import { AIMLAPI_HEADERS, OPENROUTER_HEADERS, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT
  
  export const router = express.Router();
  
 +function getOpenAiCompatibleBaseUrl(value) {
-+    const raw = String(value || '').trim().replace(/\/+$/, '');
++    let raw = String(value || '').trim().replace(/\/+$/, '');
 +    if (!raw) {
 +        throw new Error('Image API URL is required');
 +    }
@@ -1650,6 +2185,7 @@ index e24f6c6..9d754ca 100644
 +        throw new Error('Image API URL must use http or https');
 +    }
 +
++    raw = raw.replace(/\/(?:images\/generations|images\/edits|chat\/completions|models)$/i, '');
 +    return raw;
 +}
 +
@@ -1714,7 +2250,7 @@ index e24f6c6..9d754ca 100644
          }
  
          if (request.body.api === 'xai' && !customBaseUrl) {
-@@ -147,7 +209,9 @@ router.post('/caption-image', async (request, response) => {
+@@ -147,7 +210,9 @@ router.post('/caption-image', async (request, response) => {
          }
  
          if (request.body.api === 'openai') {
@@ -1725,7 +2261,7 @@ index e24f6c6..9d754ca 100644
          }
  
          if (customBaseUrl) {
-@@ -629,28 +693,68 @@ router.post('/workers-ai/models/embedding', async (request, response) => {
+@@ -629,28 +694,68 @@ router.post('/workers-ai/models/embedding', async (request, response) => {
  
  router.post('/generate-image', async (request, response) => {
      try {
@@ -1805,6 +2341,3 @@ index e24f6c6..9d754ca 100644
          }
  
          const data = await result.json();
--- 
-2.55.0.windows.3
-
