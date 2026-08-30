@@ -1,4 +1,19 @@
-# GPT 生图中转站（SillyTavern）
+# Luker 2.7.0 GPT 生图版
+
+手机端请直接安装原生 APK，不需要再安装 SillyTavern 第三方扩展：
+
+[下载 Luker GPT 生图版 APK](https://github.com/shuiyue698/sillytavern-gpt-image-relay/releases/latest)
+
+- 版本：`2.7.0-gpt.1`
+- 文件：`Luker-GPT-Image-v2.7.0-gpt.1-arm64.apk`
+- 独立包名：`com.luker.gptimage`，可以与官方 Luker 同时安装
+- 完整构建说明见 [`apk/README.md`](apk/README.md)
+
+## 旧版第三方扩展源码
+
+下面内容仅供需要普通 SillyTavern 扩展的用户参考。安装上面的原生 APK 后，不需要再安装此扩展。
+
+### GPT 生图中转站（SillyTavern）
 
 这是普通 SillyTavern/Luker 使用的第三方扩展版，不是 TauriTavern 专用扩展。仓库根目录就是标准 ST 扩展入口，可直接用 Git 安装。
 

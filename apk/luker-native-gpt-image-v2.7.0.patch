@@ -1,0 +1,1712 @@
+From a5dcd4c908bce3813a08a54e23747766f6a56a65 Mon Sep 17 00:00:00 2001
+From: shuiyue698 <shuiyue698@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 20:44:33 +0800
+Subject: [PATCH] Add built-in GPT image relay to Luker Android
+
+---
+ android-app/app/build.gradle.kts              |    2 +-
+ .../app/src/main/res/values/strings.xml       |    2 +-
+ package-lock.json                             |    4 +-
+ package.json                                  |    2 +-
+ public/index.html                             |    2 +
+ public/scripts/native-gpt-image/index.js      | 1135 +++++++++++++++++
+ public/scripts/native-gpt-image/style.css     |  292 +++++
+ src/endpoints/openai.js                       |  130 +-
+ 8 files changed, 1551 insertions(+), 18 deletions(-)
+ create mode 100644 public/scripts/native-gpt-image/index.js
+ create mode 100644 public/scripts/native-gpt-image/style.css
+
+diff --git a/android-app/app/build.gradle.kts b/android-app/app/build.gradle.kts
+index d340818..8fb4060 100644
+--- a/android-app/app/build.gradle.kts
++++ b/android-app/app/build.gradle.kts
+@@ -67,7 +67,7 @@ android {
+     ndkVersion = "29.0.14206865"
+ 
+     defaultConfig {
+-        applicationId = "com.luker.app"
++        applicationId = "com.luker.gptimage"
+         minSdk = 26
+         targetSdk = 34
+         versionCode = appVersionCode
+diff --git a/android-app/app/src/main/res/values/strings.xml b/android-app/app/src/main/res/values/strings.xml
+index e38b240..3ce76eb 100644
+--- a/android-app/app/src/main/res/values/strings.xml
++++ b/android-app/app/src/main/res/values/strings.xml
+@@ -2,7 +2,7 @@
+ <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+ <!-- Copyright (C) 2026 FunnyCups (https://github.com/funnycups) -->
+ <resources>
+-    <string name="app_name">Luker</string>
++    <string name="app_name">Luker GPT 生图版</string>
+     <string name="loading_runtime">Starting local Luker service...</string>
+     <string name="loading_webview">Service is ready. Loading interface...</string>
+     <string name="loading_failed">Failed to start the service. Please restart the app.</string>
+diff --git a/package-lock.json b/package-lock.json
+index 58da68e..093a219 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,12 +1,12 @@
+ {
+     "name": "luker",
+-    "version": "2.7.0",
++    "version": "2.7.0-gpt.1",
+     "lockfileVersion": 3,
+     "requires": true,
+     "packages": {
+         "": {
+             "name": "luker",
+-            "version": "2.7.0",
++            "version": "2.7.0-gpt.1",
+             "license": "AGPL-3.0",
+             "dependencies": {
+                 "@adobe/css-tools": "^4.4.4",
+diff --git a/package.json b/package.json
+index 284feab..2593cb5 100644
+--- a/package.json
++++ b/package.json
+@@ -133,7 +133,7 @@
+         "type": "git",
+         "url": "https://github.com/funnycups/Luker.git"
+     },
+-    "version": "2.7.0",
++    "version": "2.7.0-gpt.1",
+     "scripts": {
+         "init": "node src/server-init.js",
+         "start": "node server.js",
+diff --git a/public/index.html b/public/index.html
+index becf1bd..468fb7a 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -47,6 +47,7 @@
+     <link rel="stylesheet" type="text/css" href="scripts/variable-op-log/panel.css">
+     <link rel="stylesheet" type="text/css" href="css/user.css">
+     <link rel="stylesheet" type="text/css" href="css/request-inspector.css">
++    <link rel="stylesheet" type="text/css" href="scripts/native-gpt-image/style.css">
+     <link rel="icon" type="image/x-icon" href="favicon.ico">
+     <!-- Scripts are loaded at the end of the body to improve page load speed -->
+ </head>
+@@ -8582,6 +8583,7 @@
+     <script type="module" src="scripts/i18n.js"></script>
+     <script type="module" src="scripts/request-inspector.js"></script>
+     <script type="module" src="init.js"></script>
++    <script type="module" src="scripts/native-gpt-image/index.js"></script>
+     <script>
+         window.addEventListener('load', (event) => {
+             const documentHeight = () => {
+diff --git a/public/scripts/native-gpt-image/index.js b/public/scripts/native-gpt-image/index.js
+new file mode 100644
+index 0000000..6d2e9a6
+--- /dev/null
++++ b/public/scripts/native-gpt-image/index.js
+@@ -0,0 +1,1135 @@
++const EXTENSION_ID = 'sillytavern-gpt-image-relay';
++// Keep the standard SillyTavern surface separate from the older TauriTavern
++// build. Both builds used the same id in early releases, which made one
++// extension incorrectly believe that the other one had already mounted.
++const ROOT_ID = 'st-gpt-image-relay';
++const LEGACY_ROOT_ID = 'tt-gpt-image-relay';
++const REFERENCE_STORAGE_KEY = `${EXTENSION_ID}:reference-image`;
++const MODEL_CACHE_KEY = `${EXTENSION_ID}:models`;
++const H3_MODEL_PRESETS = ['minimax-h3', 'gpt-image-2'];
++
++const DEFAULT_SETTINGS = {
++    apiUrl: '',
++    apiKey: '',
++    imageModel: 'gpt-image-2',
++    analysisModel: 'minimax-h3',
++    resolution: '1920x1080',
++    style: '',
++    sourceMode: 'card_text',
++    manualPrompt: '',
++    protagonist: '',
++    sceneCast: '',
++    referenceCaption: '',
++    autoAnalyze: true,
++};
++
++const RESOLUTIONS = [
++    ['1920x1080', '1920x1080（16:9，1080p）'],
++    ['1536x1024', '1536x1024（3:2）'],
++    ['1792x1024', '1792x1024（16:9）'],
++    ['1280x720', '1280x720（16:9）'],
++    ['1024x1024', '1024x1024（1:1）'],
++    ['1024x1536', '1024x1536（2:3）'],
++];
++
++const STYLES = [
++    ['', '不指定风格'],
++    ['anime illustration, clean line art', '动漫风'],
++    ['二次元 digital illustration, expressive anime character design', '二次元风'],
++    ['cel shading, clean cel-painted colors, crisp highlights', '赛璐璐风'],
++    ['realistic photography, natural skin texture', '写实摄影'],
++    ['cinematic concept art, dramatic but readable lighting', '电影概念艺术'],
++    ['watercolor illustration, visible paper texture', '水彩插画'],
++];
++
++let hostContext = null;
++let settings = null;
++let modelIds = [];
++let lastModelError = null;
++let activationPromise = null;
++let mountObserver = null;
++let generationBusy = false;
++let relayProxyAvailable = null;
++
++function getContext() {
++    if (hostContext) return hostContext;
++    // Luker exposes all three names; older SillyTavern builds usually expose
++    // only SillyTavern/st. Resolve lazily so loading order does not matter.
++    for (const name of ['Luker', 'SillyTavern', 'st']) {
++        try {
++            const candidate = globalThis[name];
++            if (candidate && typeof candidate.getContext === 'function') {
++                hostContext = candidate.getContext() || null;
++                if (hostContext) return hostContext;
++            }
++        } catch (error) {
++            console.debug(`[${EXTENSION_ID}] ${name}.getContext is not ready`, error);
++        }
++    }
++    return null;
++}
++
++function reportStartupError(error) {
++    const message = error?.message || String(error || 'Unknown startup error');
++    console.error(`[${EXTENSION_ID}] failed to initialize`, error);
++    const root = getRoot();
++    if (root) {
++        root.dataset.startupError = message;
++        root.classList.add('tt-gpt-startup-error');
++    }
++    notify('error', `生图扩展启动失败：${message}`);
++}
++
++function notify(kind, message) {
++    const fn = globalThis.toastr?.[kind];
++    if (typeof fn === 'function') {
++        fn.call(globalThis.toastr, message, 'GPT 生图');
++    } else {
++        console[kind === 'error' ? 'error' : 'log'](`[${EXTENSION_ID}] ${message}`);
++    }
++}
++
++function saveSettings() {
++    try {
++        getContext()?.saveSettingsDebounced?.();
++    } catch (error) {
++        console.warn(`[${EXTENSION_ID}] settings could not be saved`, error);
++    }
++}
++
++function loadSettings() {
++    const context = getContext();
++    if (!context) {
++        settings ||= { ...DEFAULT_SETTINGS };
++        return;
++    }
++    try {
++        const allSettings = context.extensionSettings || (context.extensionSettings = {});
++        const saved = allSettings[EXTENSION_ID];
++        settings = {
++            ...DEFAULT_SETTINGS,
++            ...(saved && typeof saved === 'object' ? saved : {}),
++        };
++        allSettings[EXTENSION_ID] = settings;
++    } catch (error) {
++        console.warn(`[${EXTENSION_ID}] settings could not be loaded`, error);
++        settings ||= { ...DEFAULT_SETTINGS };
++    }
++}
++
++function waitForHostReady() {
++    let ready = null;
++    for (const name of ['__TAURITAVERN__', '__LUKER__', 'Luker']) {
++        try {
++            const candidate = globalThis[name];
++            if (candidate?.ready && typeof candidate.ready.then === 'function') {
++                ready = candidate.ready;
++                break;
++            }
++        } catch {
++            // A host may expose a getter that is not ready during bootstrap.
++        }
++    }
++    ready ||= globalThis.__TAURITAVERN_MAIN_READY__;
++    if (!ready || typeof ready.then !== 'function') return Promise.resolve();
++    // Some mobile shells expose a readiness promise that never settles.
++    // Do not block the extension UI forever while waiting for it.
++    return Promise.race([
++        ready,
++        new Promise(resolve => setTimeout(resolve, 1500)),
++    ]);
++}
++
++function getRoot() {
++    return document.getElementById(ROOT_ID);
++}
++
++function getElement(id) {
++    return getRoot()?.querySelector(`#${id}`) || document.getElementById(id);
++}
++
++function setStatus(message, kind = '') {
++    const node = getElement('tt-gpt-status');
++    if (!node) return;
++    node.textContent = message || '';
++    node.dataset.kind = kind;
++}
++
++function setApiStatus(message, kind = '') {
++    const node = getElement('tt-gpt-api-status');
++    if (!node) return;
++    node.textContent = message || '';
++    node.dataset.kind = kind;
++}
++
++function getReferenceImage() {
++    try {
++        return localStorage.getItem(REFERENCE_STORAGE_KEY) || '';
++    } catch {
++        return '';
++    }
++}
++
++function setReferenceImage(dataUrl) {
++    try {
++        if (dataUrl) localStorage.setItem(REFERENCE_STORAGE_KEY, dataUrl);
++        else localStorage.removeItem(REFERENCE_STORAGE_KEY);
++    } catch (error) {
++        console.warn(`[${EXTENSION_ID}] reference image storage failed`, error);
++    }
++}
++
++function normalizeApiUrl(value) {
++    let url = String(value || '').trim().replace(/\/+$/, '');
++    url = url.replace(/\/(?:images\/generations|chat\/completions|models)$/i, '');
++    return url;
++}
++
++function getActiveCustomApi() {
++    const context = getContext() || {};
++    const chatSettings = context.chatCompletionSettings
++        || context.oai_settings
++        || globalThis.oai_settings
++        || {};
++    const source = String(
++        chatSettings.chat_completion_source
++        || document.querySelector('#chat_completion_source')?.value
++        || '',
++    ).toLowerCase();
++    const url = normalizeApiUrl(
++        chatSettings.custom_url
++        || document.querySelector('#custom_api_url_text')?.value
++        || '',
++    );
++    return /custom/.test(source) && url ? url : '';
++}
++
++function getEffectiveApiUrl() {
++    return normalizeApiUrl(settings?.apiUrl) || getActiveCustomApi();
++}
++
++function endpointCandidates(path) {
++    const base = getEffectiveApiUrl();
++    if (!base) return [];
++    const hasVersion = /\/v\d+(?:\.\d+)?$/i.test(base);
++    const candidates = hasVersion
++        ? [`${base}/${path}`]
++        : [`${base}/v1/${path}`, `${base}/${path}`];
++    return [...new Set(candidates)];
++}
++
++function apiHeaders(json = false) {
++    const headers = { Accept: 'application/json' };
++    if (json) headers['Content-Type'] = 'application/json';
++    const key = String(settings?.apiKey || '').trim();
++    if (key) headers.Authorization = /^Bearer\s+/i.test(key) ? key : `Bearer ${key}`;
++    return headers;
++}
++
++async function requestApi(path, options = {}) {
++    const candidates = endpointCandidates(path);
++    if (!candidates.length) throw new Error('请先填写生图 API 地址。');
++    let lastError = null;
++    for (let index = 0; index < candidates.length; index += 1) {
++        const url = candidates[index];
++        try {
++            const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
++            const response = await fetch(url, {
++                ...options,
++                headers: { ...apiHeaders(Boolean(options.body) && !isFormData), ...(options.headers || {}) },
++            });
++            if (response.ok) return response;
++            const body = await response.text();
++            const error = new Error(body || `HTTP ${response.status}`);
++            error.status = response.status;
++            lastError = error;
++            if (response.status !== 404 || index === candidates.length - 1) throw error;
++        } catch (error) {
++            lastError = error;
++            if (index === candidates.length - 1) throw error;
++        }
++    }
++    throw lastError || new Error('中转站请求失败。');
++}
++
++function extractModelIds(payload) {
++    // Relays may return data[], models[], data.models[], or result.data[].
++    const values = Array.isArray(payload?.data)
++        ? payload.data
++        : Array.isArray(payload?.models)
++            ? payload.models
++            : Array.isArray(payload?.data?.models)
++                ? payload.data.models
++                : Array.isArray(payload?.result?.data)
++                    ? payload.result.data
++                    : [];
++    return values
++        .map(item => typeof item === 'string' ? item : item?.id || item?.name || item?.model)
++        .map(item => String(item || '').trim())
++        .filter(Boolean)
++        .filter((item, index, array) => array.indexOf(item) === index)
++        .sort((a, b) => a.localeCompare(b));
++}
++
++async function requestHostProxy(path, body) {
++    // Use an optional same-origin relay to avoid mobile WebView CORS failures.
++    try {
++        const contextHeaders = getContext()?.getRequestHeaders?.();
++        const response = await fetch(path, {
++            method: 'POST',
++            headers: {
++                ...(contextHeaders && typeof contextHeaders === 'object' ? contextHeaders : {}),
++                Accept: 'application/json',
++                'Content-Type': 'application/json',
++            },
++            body: JSON.stringify(body),
++        });
++        if (response.status === 404 || response.status === 405) return null;
++        const contentType = response.headers?.get?.('content-type') || '';
++        if (/text\/html/i.test(contentType)) return null;
++        if (!response.ok) {
++            const error = new Error((await response.text()) || `HTTP ${response.status}`);
++            error.status = response.status;
++            throw error;
++        }
++        return response;
++    } catch (error) {
++        if (error?.status === 404 || error?.status === 405) return null;
++        if (error instanceof TypeError && /failed to fetch/i.test(error.message || '')) return null;
++        throw error;
++    }
++}
++
++async function detectRelayProxy() {
++    if (relayProxyAvailable !== null) return relayProxyAvailable;
++    try {
++        const response = await requestHostProxy('/api/openai/test-image-connection', {
++            api_url: getEffectiveApiUrl(),
++            api_key: String(settings?.apiKey || '').trim(),
++        });
++        relayProxyAvailable = Boolean(response);
++    } catch (error) {
++        // A non-404 response means the patched route exists, even when the
++        // supplied credentials are not accepted yet.
++        relayProxyAvailable = error?.status !== 404 && error?.status !== 405;
++    }
++    return relayProxyAvailable;
++}
++
++function chooseDefaultImageModel(ids) {
++    const available = [...new Set([...(ids || []), ...H3_MODEL_PRESETS])];
++    const preferred = available.find(id => /gpt-image|dall-e|image|flux|sdxl|stable-diffusion/i.test(id));
++    return preferred || available[0] || '';
++}
++
++function chooseDefaultAnalysisModel(ids) {
++    const saved = String(settings?.analysisModel || '').trim();
++    if (saved) return saved;
++    const available = [...new Set([...(ids || []), ...H3_MODEL_PRESETS])];
++    return available.find(id => /minimax-h3/i.test(id))
++        || available.find(id => !/gpt-image|dall-e|image|embedding|audio|tts|whisper/i.test(id))
++        || available[0] || 'minimax-h3';
++}
++
++function fillModelSelects() {
++    const imageSelect = getElement('tt-gpt-image-model-select');
++    const analysisSelect = getElement('tt-gpt-analysis-model-select');
++    const addOption = (select, label, value) => {
++        if (!select) return;
++        // `new Option()` is missing in a few embedded WebViews. Creating the
++        // element through the document is equivalent and broadly compatible.
++        const option = document.createElement('option');
++        option.textContent = label;
++        option.value = value;
++        select.appendChild(option);
++    };
++    const makeOptions = (select, selected, emptyLabel) => {
++        if (!select) return;
++        const values = [...new Set([...H3_MODEL_PRESETS, ...modelIds])];
++        if (selected && !values.includes(selected)) values.unshift(selected);
++        select.replaceChildren();
++        if (!values.length) {
++            addOption(select, emptyLabel, '');
++        } else {
++            for (const id of values) addOption(select, id, id);
++        }
++        if (selected) select.value = selected;
++    };
++    makeOptions(imageSelect, settings?.imageModel || chooseDefaultImageModel(modelIds), '先点“刷新模型”或手动填写模型');
++    makeOptions(analysisSelect, settings?.analysisModel || chooseDefaultAnalysisModel(modelIds), '先点“刷新模型”或手动填写模型');
++}
++
++async function refreshModels({ silent = false } = {}) {
++    lastModelError = null;
++    try {
++        let response = null;
++        try {
++            response = await requestHostProxy('/api/openai/test-image-connection', {
++                api_url: getEffectiveApiUrl(),
++                api_key: String(settings?.apiKey || '').trim(),
++            });
++            relayProxyAvailable = Boolean(response);
++        } catch (error) {
++            relayProxyAvailable = error?.status !== 404 && error?.status !== 405;
++            console.warn(`[${EXTENSION_ID}] host relay model lookup failed; trying the configured endpoint`, error);
++        }
++        let payload;
++        if (response) {
++            payload = await response.json();
++            modelIds = extractModelIds(payload?.models ? { data: payload.models } : payload);
++        } else {
++            response = await requestApi('models', { method: 'GET' });
++            payload = await response.json();
++            modelIds = extractModelIds(payload);
++        }
++        modelIds = [...new Set([...H3_MODEL_PRESETS, ...modelIds])];
++        try { localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(modelIds)); } catch { /* best effort */ }
++        if (!settings.imageModel) settings.imageModel = chooseDefaultImageModel(modelIds);
++        if (!settings.analysisModel) settings.analysisModel = chooseDefaultAnalysisModel(modelIds);
++        fillModelSelects();
++        saveSettings();
++        setApiStatus(`${modelIds.length} 个模型可用`, 'success');
++        if (!silent) notify('success', `已读取 ${modelIds.length} 个模型，可以在下拉框选择。`);
++        return modelIds;
++    } catch (error) {
++        lastModelError = error;
++        if (!silent) {
++            setApiStatus(`连接失败：${error.message || error}`, 'error');
++            notify('error', `读取模型失败：${error.message || error}`);
++        }
++        return [];
++    }
++}
++
++function loadCachedModels() {
++    try {
++        const cached = JSON.parse(localStorage.getItem(MODEL_CACHE_KEY) || '[]');
++        if (Array.isArray(cached)) modelIds = cached.filter(item => typeof item === 'string');
++    } catch { /* ignore invalid cache */ }
++}
++
++async function testConnection() {
++    const button = getElement('tt-gpt-api-test');
++    if (button) button.disabled = true;
++    setApiStatus('正在连接…', 'pending');
++    try {
++        const ids = await refreshModels({ silent: true });
++        if (lastModelError) throw lastModelError;
++        if (!ids.length) {
++            const hasManualModel = String(settings?.imageModel || '').trim() || String(settings?.analysisModel || '').trim();
++            const message = hasManualModel
++                ? '接口已连接；模型列表不可读，将使用手动填写的模型。'
++                : '接口已连接，但未返回模型列表；请在两个模型输入框手动填写模型名。';
++            setApiStatus(message, 'warning');
++            notify('warning', message);
++            return;
++        }
++        if (!ids.length) throw new Error('接口已响应，但没有返回模型列表。');
++        setApiStatus(`连接成功，发现 ${ids.length} 个模型`, 'success');
++        notify('success', `中转站连接成功，已加载 ${ids.length} 个模型。`);
++    } catch (error) {
++        setApiStatus(`连接失败：${error.message || error}`, 'error');
++        notify('error', `连接测试失败：${error.message || error}`);
++    } finally {
++        if (button) button.disabled = false;
++    }
++}
++
++function messageText(message) {
++    return String(message?.mes ?? message?.content ?? '')
++        .replace(/<content>([\s\S]*?)<\/content>/gi, '$1')
++        .replace(/<[^>]+>/g, ' ')
++        .replace(/\r\n?/g, '\n')
++        .trim();
++}
++
++function chatMessages() {
++    const chat = getContext()?.chat;
++    return Array.isArray(chat)
++        ? chat.map((message, index) => ({ message, index })).filter(({ message }) => !message?.is_system && messageText(message))
++        : [];
++}
++
++function latestTarget() {
++    const messages = chatMessages();
++    return messages.at(-1) || null;
++}
++
++function paragraphsFrom(text) {
++    return String(text || '')
++        .split(/\n\s*\n+/)
++        .map(item => item.trim())
++        .filter(Boolean);
++}
++
++function latestParagraph() {
++    const messages = chatMessages();
++    for (let index = messages.length - 1; index >= 0; index -= 1) {
++        const paragraphs = paragraphsFrom(messageText(messages[index].message));
++        if (paragraphs.length) return paragraphs.at(-1);
++    }
++    return '';
++}
++
++function getCharacterCardText() {
++    const context = getContext() || {};
++    const characters = context.characters;
++    const character = Array.isArray(characters)
++        ? characters[context.characterId]
++        : characters?.[context.characterId];
++    const data = character?.data || character || {};
++    const fields = [
++        ['Name', data.name || character?.name],
++        ['Description', data.description],
++        ['Personality', data.personality],
++        ['Scenario', data.scenario],
++        ['First message', data.first_mes],
++        ['Example messages', data.mes_example],
++    ];
++    return fields
++        .filter(([, value]) => typeof value === 'string' && value.trim())
++        .map(([label, value]) => `${label}: ${value.trim()}`)
++        .join('\n')
++        .slice(0, 14000);
++}
++
++function getInterfaceText() {
++    const visible = document.querySelector('#chat')?.innerText?.trim();
++    if (visible) return visible.slice(-14000);
++    return chatMessages().map(({ message }) => messageText(message)).join('\n\n').slice(-14000);
++}
++
++function getSourceText() {
++    const interfaceText = getInterfaceText();
++    if (settings.sourceMode === 'interface_text') return interfaceText;
++    const card = getCharacterCardText();
++    return [card && `Character card (authoritative):\n${card}`, interfaceText && `Current conversation text:\n${interfaceText}`]
++        .filter(Boolean)
++        .join('\n\n')
++        .slice(-24000);
++}
++
++function buildPrompt(mode) {
++    const source = getSourceText();
++    const last = latestParagraph();
++    const protagonist = String(settings.protagonist || '').trim();
++    const sceneCast = String(settings.sceneCast || '').trim();
++    const style = String(settings.style || '').trim();
++    const resolution = String(settings.resolution || '1920x1080');
++    const common = [
++        'Create one coherent image for the current story.',
++        `Output canvas: ${resolution}.`,
++        style ? `Visual style: ${style}.` : '',
++        'Use only details supported by the authoritative settings and text below.',
++        'Do not invent a different protagonist, gender, clothing, age, location, or unrelated characters.',
++        protagonist ? `Authoritative protagonist setting (must be preserved exactly):\n${protagonist}` : '',
++        sceneCast ? `Authoritative scene cast setting (only these additional people may appear):\n${sceneCast}` : '',
++    ].filter(Boolean);
++
++    if (mode === 'character') {
++        common.push(
++            'Make a pulled-back full-body portrait of the protagonist only.',
++            'Show the complete head, hands, legs, and feet without cropping. Do not add an NPC or a second person.',
++        );
++    } else if (mode === 'scene') {
++        common.push(
++            'Make a cinematic wide shot of the current scene.',
++            'Keep the location, lighting, objects, action, and explicitly named cast faithful to the text.',
++        );
++    } else {
++        common.push(
++            'Illustrate the final paragraph below as the current story moment.',
++            'Treat the final paragraph as the highest-priority action and composition instruction.',
++            last ? `FINAL PARAGRAPH (do not replace it with an invented scene):\n${last}` : 'No final paragraph is available; use the latest visible conversation text.',
++        );
++    }
++
++    if (source) common.push(`Source text (${settings.sourceMode === 'interface_text' ? 'current interface only' : 'character card plus conversation'}):\n${source}`);
++    const manual = String(settings.manualPrompt || '').trim();
++    if (manual) common.push(`Additional user instruction:\n${manual}`);
++    const caption = String(settings.referenceCaption || '').trim();
++    if (caption) common.push(`Reference image analysis (use it for visual identity; do not ignore the source text):\n${caption}`);
++    common.push('Return the image directly. Preserve identity and visual continuity across images.');
++    return common.join('\n\n').slice(0, 50000);
++}
++
++function extractCaption(payload) {
++    const content = payload?.caption
++        ?? payload?.choices?.[0]?.message?.content
++        ?? payload?.choices?.[0]?.text
++        ?? payload?.output_text;
++    if (typeof content === 'string') return content.trim();
++    if (Array.isArray(content)) {
++        return content.map(part => typeof part === 'string' ? part : part?.text || part?.content || '').join('\n').trim();
++    }
++    return '';
++}
++
++function fallbackCaption() {
++    const lines = [
++        'Reference image analysis is unavailable. Use this editable visual-reference draft and replace it with the details you can see.',
++    ];
++    if (settings.protagonist) lines.push(`Preserve protagonist setting from the left panel: ${settings.protagonist}`);
++    if (settings.sceneCast) lines.push(`Preserve scene cast setting from the left panel: ${settings.sceneCast}`);
++    lines.push('Describe the reference image subject, gender presentation, age range, face, hair, eyes, skin tone, clothing, accessories, pose, camera framing, background, lighting, colors, and art style. Do not invent details.');
++    return lines.join('\n');
++}
++
++async function analyzeReference() {
++    const image = getReferenceImage();
++    if (!image) {
++        notify('warning', '请先上传参考图。');
++        return '';
++    }
++    const button = getElement('tt-gpt-analyze');
++    if (button) button.disabled = true;
++    setStatus('正在分析参考图…', 'pending');
++    const model = String(settings.analysisModel || chooseDefaultAnalysisModel(modelIds) || 'gpt-5.6-luna').trim();
++    const prompt = [
++        'Analyze this reference image for an image-generation workflow.',
++        'Describe only visible details: subject identity, gender presentation, age range, face, hair, eyes, skin tone, body shape, clothing, accessories, pose, camera framing, background, lighting, colors, and art style.',
++        'Do not guess hidden details. Return one precise editable paragraph in English.',
++        settings.protagonist ? `The left-panel protagonist setting is authoritative and must be preserved when relevant: ${settings.protagonist}` : '',
++        settings.sceneCast ? `The left-panel scene cast setting is authoritative: ${settings.sceneCast}` : '',
++    ].filter(Boolean).join('\n');
++    try {
++        const messageBody = {
++            model,
++            messages: [{
++                role: 'user',
++                content: [
++                    { type: 'text', text: prompt },
++                    { type: 'image_url', image_url: { url: image, detail: 'high' } },
++                ],
++            }],
++            max_tokens: 1200,
++            temperature: 0.2,
++        };
++        let response = null;
++        const manualUrl = normalizeApiUrl(settings?.apiUrl);
++        const leftCustomUrl = getActiveCustomApi();
++        const endpointUrl = manualUrl || leftCustomUrl;
++        const useLeftCustom = !manualUrl && Boolean(leftCustomUrl);
++        if (useLeftCustom || await detectRelayProxy()) {
++            try {
++                response = await requestHostProxy('/api/openai/caption-image', {
++                    image,
++                    prompt,
++                    api: useLeftCustom ? 'custom' : 'openai',
++                    api_url: endpointUrl,
++                    api_key: String(settings?.apiKey || '').trim(),
++                    ...(useLeftCustom ? { server_url: leftCustomUrl } : {}),
++                    model,
++                });
++            } catch (error) {
++                console.warn(`[${EXTENSION_ID}] host reference analysis failed; trying the configured endpoint`, error);
++            }
++        }
++        if (!response) {
++            response = await requestApi('chat/completions', {
++                method: 'POST',
++                body: JSON.stringify(messageBody),
++            });
++        }
++        const caption = extractCaption(await response.json());
++        settings.referenceCaption = caption || fallbackCaption();
++        getElement('tt-gpt-caption').value = settings.referenceCaption;
++        saveSettings();
++        setStatus(caption ? `分析完成（${model}），结果可编辑。` : '接口没有返回文字，已生成可编辑草稿。', caption ? 'success' : 'warning');
++        return settings.referenceCaption;
++    } catch (error) {
++        console.error(`[${EXTENSION_ID}] reference analysis failed`, error);
++        settings.referenceCaption = fallbackCaption();
++        const caption = getElement('tt-gpt-caption');
++        if (caption) caption.value = settings.referenceCaption;
++        saveSettings();
++        setStatus(`分析接口不可用，已生成可编辑草稿：${error.message || error}`, 'warning');
++        return settings.referenceCaption;
++    } finally {
++        if (button) button.disabled = false;
++    }
++}
++
++function normalizeDataUrl(value) {
++    const text = String(value || '').trim();
++    if (/^data:image\//i.test(text)) return text;
++    if (/^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.length > 100) return `data:image/png;base64,${text.replace(/\s+/g, '')}`;
++    return '';
++}
++
++function extractImage(payload) {
++    const item = Array.isArray(payload?.data)
++        ? payload.data[0]
++        : Array.isArray(payload?.images)
++            ? payload.images[0]
++            : payload?.data;
++    const b64 = item?.b64_json || item?.base64 || item?.image || (typeof item === 'string' ? item : '');
++    const dataUrl = normalizeDataUrl(b64);
++    if (dataUrl) return { kind: 'data', value: dataUrl };
++    const url = (typeof item === 'string' ? item : null) || item?.url || item?.image_url || payload?.url;
++    if (typeof url === 'string' && /^https?:\/\//i.test(url)) return { kind: 'url', value: url };
++    return null;
++}
++
++function dataUrlParts(dataUrl) {
++    const match = String(dataUrl || '').match(/^data:image\/([\w.+-]+);base64,(.+)$/i);
++    return match ? { extension: match[1].toLowerCase().replace('jpeg', 'jpg'), base64: match[2] } : null;
++}
++
++function dataUrlToBlob(dataUrl) {
++    const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/i);
++    if (!match) throw new Error('参考图格式无效，请重新上传 PNG、JPEG 或 WebP 图片。');
++    const binary = atob(match[2].replace(/\s+/g, ''));
++    const bytes = new Uint8Array(binary.length);
++    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
++    return { blob: new Blob([bytes], { type: match[1] }), mime: match[1] };
++}
++
++async function requestDirectImage(body, referenceImage) {
++    if (!referenceImage) {
++        return requestApi('images/generations', {
++            method: 'POST',
++            body: JSON.stringify(body),
++        });
++    }
++
++    const { blob, mime } = dataUrlToBlob(referenceImage);
++    const extension = mime.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
++    const form = new FormData();
++    form.append('image', blob, `reference.${extension}`);
++    form.append('prompt', String(body.prompt || ''));
++    form.append('model', String(body.model || 'gpt-image-1'));
++    form.append('size', String(body.size || '1024x1024'));
++    form.append('n', String(body.n || 1));
++    if (body.response_format) form.append('response_format', String(body.response_format));
++    return requestApi('images/edits', { method: 'POST', body: form });
++}
++
++async function requestGeneratedImage(body, referenceImage) {
++    let proxyError = null;
++    if (await detectRelayProxy()) {
++        try {
++            const response = await requestHostProxy('/api/openai/generate-image', {
++                ...body,
++                api_url: getEffectiveApiUrl(),
++                api_key: String(settings?.apiKey || '').trim(),
++                ...(referenceImage ? { reference_image: referenceImage } : {}),
++            });
++            if (response) return response;
++        } catch (error) {
++            proxyError = error;
++            console.warn(`[${EXTENSION_ID}] host image relay failed; trying the configured endpoint`, error);
++        }
++    }
++
++    try {
++        return await requestDirectImage(body, referenceImage);
++    } catch (error) {
++        if (proxyError && !error.cause) error.cause = proxyError;
++        throw error;
++    }
++}
++
++async function saveDataUrl(dataUrl, folderName) {
++    const parts = dataUrlParts(dataUrl);
++    if (!parts) return dataUrl;
++    try {
++        const utils = await import('/scripts/utils.js');
++        if (typeof utils.saveBase64AsFile === 'function') {
++            return await utils.saveBase64AsFile(parts.base64, folderName || '', `tt_gpt_${Date.now()}`, parts.extension);
++        }
++    } catch (error) {
++        console.warn(`[${EXTENSION_ID}] host image upload unavailable; using data URL`, error);
++    }
++    return dataUrl;
++}
++
++async function persistImage(image, folderName) {
++    if (!image) throw new Error('生图接口没有返回图片。');
++    if (image.kind === 'data') return saveDataUrl(image.value, folderName);
++    try {
++        const response = await fetch(image.value);
++        if (response.ok) {
++            const blob = await response.blob();
++            const dataUrl = await new Promise((resolve, reject) => {
++                const reader = new FileReader();
++                reader.onload = () => resolve(String(reader.result || ''));
++                reader.onerror = reject;
++                reader.readAsDataURL(blob);
++            });
++            return await saveDataUrl(dataUrl, folderName);
++        }
++    } catch (error) {
++        console.warn(`[${EXTENSION_ID}] generated URL could not be copied into local storage`, error);
++    }
++    return image.value;
++}
++
++function ensureMediaArray(message) {
++    message.extra ||= {};
++    if (Array.isArray(message.extra.media)) return message.extra.media;
++    message.extra.media = message.extra.media ? [message.extra.media] : [];
++    return message.extra.media;
++}
++
++async function appendImageToTarget(target, imageUrl, prompt, mode) {
++    const context = getContext();
++    if (!context || !target) throw new Error('当前聊天没有可挂载图片的文字段落。');
++    const media = ensureMediaArray(target.message);
++    media.push({
++        url: imageUrl,
++        type: 'image',
++        title: prompt,
++        source: 'generated',
++        generation_type: `tt-gpt-${mode}`,
++    });
++    target.message.extra.media_display ||= 'gallery';
++    target.message.extra.inline_image = false;
++    target.message.extra.media_index = media.length - 1;
++    const element = document.querySelector(`.mes[mesid="${target.index}"]`);
++    const jq = globalThis.$;
++    if (element && typeof context.appendMediaToMessage === 'function' && typeof jq === 'function') {
++        context.appendMediaToMessage(target.message, jq(element), 'keep');
++    }
++    await context.saveChat?.();
++}
++
++async function generateImage(mode) {
++    if (generationBusy) return;
++    const target = latestTarget();
++    if (!target) {
++        notify('warning', '当前聊天还没有可以挂载图片的文字段落。');
++        return;
++    }
++    const imageModel = String(settings.imageModel || getElement('tt-gpt-image-model-select')?.value || '').trim();
++    if (!imageModel) {
++        notify('warning', '请先填写或刷新生图模型。');
++        getRoot()?.classList.add('tt-gpt-open');
++        return;
++    }
++    if (!getEffectiveApiUrl()) {
++        notify('warning', '请先填写生图 API 地址。');
++        getRoot()?.classList.add('tt-gpt-open');
++        return;
++    }
++    generationBusy = true;
++    const buttons = getRoot()?.querySelectorAll('[data-mode]') || [];
++    buttons.forEach(button => { button.disabled = true; });
++    setStatus(`正在生成${mode === 'character' ? '角色' : mode === 'scene' ? '场景' : '最后一段'}图片…`, 'pending');
++    const prompt = buildPrompt(mode);
++    const body = {
++        model: imageModel,
++        prompt,
++        n: 1,
++        size: settings.resolution || '1920x1080',
++        response_format: 'b64_json',
++    };
++    const referenceImage = getReferenceImage();
++    try {
++        let response;
++        try {
++            response = await requestGeneratedImage(body, referenceImage);
++        } catch (error) {
++            if (error.status === 400) {
++                delete body.response_format;
++                response = await requestGeneratedImage(body, referenceImage);
++            } else {
++                throw error;
++            }
++        }
++        const image = extractImage(await response.json());
++        const currentContext = getContext();
++        const currentCharacter = Array.isArray(currentContext?.characters)
++            ? currentContext.characters[currentContext.characterId]
++            : currentContext?.characters?.[currentContext?.characterId];
++        const folder = currentCharacter?.name || currentCharacter?.data?.name || '';
++        const savedPath = await persistImage(image, folder);
++        await appendImageToTarget(target, savedPath, prompt, mode);
++        setStatus(`已添加到第 ${target.index + 1} 段文字下，可在该段图片中翻阅。`, 'success');
++        notify('success', '图片已生成并添加到当前最新文字段落。');
++    } catch (error) {
++        console.error(`[${EXTENSION_ID}] image generation failed`, error);
++        setStatus(`生图失败：${error.message || error}`, 'error');
++        notify('error', `生图失败：${error.message || error}`);
++    } finally {
++        generationBusy = false;
++        buttons.forEach(button => { button.disabled = false; });
++    }
++}
++
++function readFormValue(element) {
++    if (!element) return '';
++    if (element.type === 'checkbox') return Boolean(element.checked);
++    return String(element.value ?? '');
++}
++
++function writeFormValue(element, value) {
++    if (!element) return;
++    if (element.type === 'checkbox') element.checked = Boolean(value);
++    else element.value = value ?? '';
++}
++
++function syncFormFromSettings() {
++    const root = getRoot();
++    if (!root || !settings) return;
++    root.querySelectorAll('[data-setting]').forEach(element => writeFormValue(element, settings[element.dataset.setting]));
++    const preview = getElement('tt-gpt-reference-preview');
++    const image = getReferenceImage();
++    if (preview) {
++        preview.src = image;
++        preview.hidden = !image;
++    }
++    const caption = getElement('tt-gpt-caption');
++    if (caption) caption.value = settings.referenceCaption || '';
++    fillModelSelects();
++}
++
++function handleSettingChange(element) {
++    const key = element.dataset.setting;
++    if (!key || !settings) return;
++    settings[key] = readFormValue(element);
++    if (key === 'apiUrl' || key === 'apiKey') setApiStatus('配置已修改，点击连接测试。', 'pending');
++    saveSettings();
++}
++
++function bindDrag(panel, handle) {
++    if (!panel || !handle || typeof handle.addEventListener !== 'function') return;
++    let drag = null;
++    handle.addEventListener('pointerdown', event => {
++        if (event.target.closest('button')) return;
++        const rect = panel.getBoundingClientRect();
++        drag = { offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
++        panel.style.left = `${rect.left}px`;
++        panel.style.top = `${rect.top}px`;
++        panel.style.right = 'auto';
++        panel.style.bottom = 'auto';
++        handle.setPointerCapture?.(event.pointerId);
++        event.preventDefault();
++    });
++    handle.addEventListener('pointermove', event => {
++        if (!drag) return;
++        const margin = 8;
++        const rect = panel.getBoundingClientRect();
++        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
++        const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
++        const left = Math.min(maxLeft, Math.max(margin, event.clientX - drag.offsetX));
++        const top = Math.min(maxTop, Math.max(margin, event.clientY - drag.offsetY));
++        panel.style.left = `${left}px`;
++        panel.style.top = `${top}px`;
++    });
++    const stop = event => {
++        if (!drag) return;
++        drag = null;
++        handle.releasePointerCapture?.(event.pointerId);
++    };
++    handle.addEventListener('pointerup', stop);
++    handle.addEventListener('pointercancel', stop);
++}
++
++function buildUi() {
++    const root = document.createElement('div');
++    root.id = ROOT_ID;
++    root.innerHTML = `
++        <div class="tt-gpt-toolbar" role="toolbar" aria-label="GPT image">
++            <button type="button" class="tt-gpt-action" data-mode="character" title="Generate from character"><i class="fa-solid fa-user"></i><span>Character</span></button>
++            <button type="button" class="tt-gpt-action" data-mode="scene" title="Generate from scene"><i class="fa-solid fa-mountain-sun"></i><span>Scene</span></button>
++            <button type="button" class="tt-gpt-action" data-mode="last" title="Generate from latest text"><i class="fa-solid fa-paragraph"></i><span>Latest</span></button>
++            <button type="button" class="tt-gpt-action tt-gpt-settings-button" data-action="toggle" title="Open image settings"><i class="fa-solid fa-sliders"></i><span>Settings</span></button>
++        </div>
++        <section class="tt-gpt-panel" data-tt-mobile-surface="free-window" aria-label="GPT image controls">
++            <header class="tt-gpt-panel-header" data-drag-handle><strong>GPT Image</strong><div class="tt-gpt-header-actions"><button type="button" data-action="generate" title="Generate"><i class="fa-solid fa-wand-magic-sparkles"></i></button><button type="button" data-action="minimize" title="Minimize"><i class="fa-solid fa-minus"></i></button></div></header>
++            <div class="tt-gpt-panel-body">
++                <div class="tt-gpt-grid"><label>Image API URL<input type="url" data-setting="apiUrl" placeholder="https://.../v1" autocomplete="url"></label><label>Image API key<input type="password" data-setting="apiKey" placeholder="API key" autocomplete="off"></label></div>
++                <div class="tt-gpt-inline"><button type="button" class="menu_button" id="tt-gpt-api-test" data-action="test">Test connection</button><button type="button" class="menu_button" data-action="refresh-models">Refresh models</button><span id="tt-gpt-api-status" aria-live="polite"></span></div>
++                <div class="tt-gpt-grid"><label>Image model<select id="tt-gpt-image-model-select" data-model-select="imageModel"></select></label><label>Image model (custom)<input type="text" data-setting="imageModel" placeholder="gpt-image-1"></label><label>Analysis model<select id="tt-gpt-analysis-model-select" data-model-select="analysisModel"></select></label><label>Analysis model (custom)<input type="text" data-setting="analysisModel" placeholder="gpt-5.6-luna"></label><label>Resolution<select data-setting="resolution">${RESOLUTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Style<select data-setting="style">${STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Content source<select data-setting="sourceMode"><option value="card_text">Character card + current text</option><option value="interface_text">Current interface text only</option></select></label><label class="tt-gpt-checkbox"><input type="checkbox" data-setting="autoAnalyze"> Auto-analyze reference</label></div>
++                <label>Additional prompt<textarea data-setting="manualPrompt" rows="3" placeholder="Added to every image request"></textarea></label>
++                <div class="tt-gpt-grid"><label>Protagonist (locked)<textarea data-setting="protagonist" rows="3" placeholder="Main character only"></textarea></label><label>Scene cast<textarea data-setting="sceneCast" rows="3" placeholder="People visible in the scene"></textarea></label></div>
++                <div class="tt-gpt-reference-row"><div class="tt-gpt-reference-file"><label>Reference image<input id="tt-gpt-reference-file" type="file" accept="image/png,image/jpeg,image/webp"></label><img id="tt-gpt-reference-preview" alt="Reference preview" hidden><button type="button" class="menu_button" data-action="clear-reference">Clear reference</button></div><div class="tt-gpt-reference-analysis"><label>Image analysis (editable)<textarea id="tt-gpt-caption" data-setting="referenceCaption" rows="9" placeholder="Analysis result appears here"></textarea></label><button type="button" class="menu_button" id="tt-gpt-analyze" data-action="analyze">Analyze reference</button></div></div>
++                <div id="tt-gpt-status" class="tt-gpt-status" role="status" aria-live="polite"></div>
++            </div>
++        </section>`;
++    return root;
++}
++
++function setupUi(root) {
++    const panel = root.querySelector('.tt-gpt-panel');
++    const handle = root.querySelector('[data-drag-handle]');
++    const settingsButton = root.querySelector('.tt-gpt-settings-button');
++    if (!panel || !handle) throw new Error('生图面板结构不完整');
++    const closestElement = (target, selector) => {
++        if (!target) return null;
++        if (typeof target.closest === 'function') return target.closest(selector);
++        return target.parentElement && typeof target.parentElement.closest === 'function'
++            ? target.parentElement.closest(selector)
++            : null;
++    };
++    let lastSettingsToggle = 0;
++    const toggleSettings = event => {
++        event.preventDefault();
++        event.stopPropagation();
++        const now = Date.now();
++        if (now - lastSettingsToggle < 250) return;
++        lastSettingsToggle = now;
++        const open = !root.classList.contains('tt-gpt-open');
++        root.classList.toggle('tt-gpt-open', open);
++        // Inline fallback bypasses host/mobile theme rules that may override
++        // the extension stylesheet's display or stacking context.
++        panel.style.display = open ? 'flex' : 'none';
++        panel.style.visibility = open ? 'visible' : 'hidden';
++        panel.style.pointerEvents = open ? 'auto' : 'none';
++        panel.style.zIndex = '2147483000';
++        settingsButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
++    };
++    settingsButton?.setAttribute('aria-expanded', 'false');
++    const dispatchAction = event => {
++        const button = closestElement(event.target, 'button');
++        if (!button || !root.contains(button)) return;
++        const action = button.dataset.action;
++        const mode = button.dataset.mode;
++        if (mode) {
++            void generateImage(mode);
++            return;
++        }
++        if (action === 'toggle') toggleSettings(event);
++        if (action === 'generate') void generateImage('last');
++        if (action === 'minimize') root.classList.toggle('tt-gpt-minimized');
++        if (action === 'test') void testConnection();
++        if (action === 'refresh-models') void refreshModels();
++        if (action === 'analyze') void analyzeReference();
++        if (action === 'clear-reference') {
++            setReferenceImage('');
++            settings.referenceCaption = '';
++            const caption = getElement('tt-gpt-caption');
++            const preview = getElement('tt-gpt-reference-preview');
++            const fileInput = getElement('tt-gpt-reference-file');
++            if (caption) caption.value = '';
++            if (preview) {
++                preview.removeAttribute('src');
++                preview.hidden = true;
++            }
++            if (fileInput) fileInput.value = '';
++            saveSettings();
++            setStatus('参考图和分析结果已清除。', 'success');
++        }
++    };
++    let lastPointerAction = 0;
++    // Some mobile ST toolbars suppress bubbled click events. Handle touch
++    // activation during capture, then ignore the synthetic click that follows.
++    root.addEventListener('pointerup', event => {
++        if (!closestElement(event.target, 'button')) return;
++        lastPointerAction = Date.now();
++        dispatchAction(event);
++    }, true);
++    root.addEventListener('click', event => {
++        if (Date.now() - lastPointerAction < 500) return;
++        dispatchAction(event);
++    });
++    root.addEventListener('input', event => {
++        const element = closestElement(event.target, '[data-setting]');
++        if (element) handleSettingChange(element);
++    });
++    root.addEventListener('change', event => {
++        const element = closestElement(event.target, '[data-setting]');
++        if (element) handleSettingChange(element);
++        const modelSelect = closestElement(event.target, '[data-model-select]');
++        if (modelSelect && modelSelect.value) {
++            const key = modelSelect.dataset.modelSelect;
++            settings[key] = modelSelect.value;
++            const input = root.querySelector(`[data-setting="${key}"]`);
++            if (input) input.value = modelSelect.value;
++            saveSettings();
++        }
++    });
++    root.querySelector('#tt-gpt-reference-file')?.addEventListener('change', event => {
++        const file = event.target.files?.[0];
++        if (!file) return;
++        const reader = new FileReader();
++        reader.onload = async () => {
++            const dataUrl = String(reader.result || '');
++            setReferenceImage(dataUrl);
++            const preview = getElement('tt-gpt-reference-preview');
++            preview.src = dataUrl;
++            preview.hidden = false;
++            settings.referenceCaption = '';
++            getElement('tt-gpt-caption').value = '';
++            saveSettings();
++            setStatus(settings.autoAnalyze ? '参考图已上传，正在自动分析…' : '参考图已上传，点击分析或手动填写结果。', 'pending');
++            if (settings.autoAnalyze) await analyzeReference();
++        };
++        reader.readAsDataURL(file);
++    });
++    bindDrag(panel, handle);
++    syncFormFromSettings();
++    loadCachedModels();
++    fillModelSelects();
++    if (getEffectiveApiUrl()) void refreshModels({ silent: true });
++}
++
++function mountUi() {
++    if (getRoot()) return true;
++    // Mount at body level on mobile. ST send-form containers can have
++    // display:contents, transforms, or overflow rules that hide fixed panels.
++    // The toolbar has its own fixed positioning, so it remains visible there.
++    const container = document.body;
++    if (!container) return false;
++    const root = buildUi();
++    root.classList.add('tt-gpt-body-mounted');
++    root.dataset.extensionId = EXTENSION_ID;
++    root.dataset.legacyRootId = LEGACY_ROOT_ID;
++    container.appendChild(root);
++    try {
++        setupUi(root);
++    } catch (error) {
++        root.remove();
++        throw error;
++    }
++    return true;
++}
++
++function scheduleUiMount() {
++    const stopWatching = () => {
++        mountObserver?.disconnect();
++        mountObserver = null;
++    };
++    const attemptMount = () => {
++        try {
++            if (!mountUi()) return false;
++            stopWatching();
++            return true;
++        } catch (error) {
++            stopWatching();
++            reportStartupError(error);
++            return true;
++        }
++    };
++
++    if (attemptMount()) return;
++    if (document.readyState === 'loading') {
++        document.addEventListener('DOMContentLoaded', attemptMount, { once: true });
++    }
++    const observerTarget = document.documentElement;
++    if (observerTarget && typeof MutationObserver === 'function') {
++        mountObserver = new MutationObserver(attemptMount);
++        mountObserver.observe(observerTarget, { childList: true, subtree: true });
++        setTimeout(stopWatching, 30000);
++    } else {
++        setTimeout(attemptMount, 0);
++    }
++}
++
++async function activateImpl() {
++    await waitForHostReady();
++    hostContext = getContext();
++    if (!hostContext) console.warn(`[${EXTENSION_ID}] SillyTavern context is not ready; mounting UI anyway`);
++    settings ||= { ...DEFAULT_SETTINGS };
++    loadSettings();
++    scheduleUiMount();
++}
++
++export function activate() {
++    activationPromise ||= activateImpl();
++    return activationPromise;
++}
++
++globalThis[EXTENSION_ID] = { activate, generateImage, analyzeReference };
++void activate().catch(reportStartupError);
+diff --git a/public/scripts/native-gpt-image/style.css b/public/scripts/native-gpt-image/style.css
+new file mode 100644
+index 0000000..f9c4282
+--- /dev/null
++++ b/public/scripts/native-gpt-image/style.css
+@@ -0,0 +1,292 @@
++#st-gpt-image-relay {
++    --tt-gpt-accent: var(--SmartThemeQuoteColor, #78b7ff);
++    --tt-gpt-panel-bg: var(--SmartThemeBlurTintColor, rgba(24, 28, 36, 0.98));
++    --tt-gpt-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
++    position: fixed;
++    inset: 0;
++    z-index: 2147483000;
++    pointer-events: none;
++    isolation: isolate;
++    font-size: 13px;
++}
++
++#st-gpt-image-relay .tt-gpt-toolbar {
++    display: inline-flex;
++    align-items: center;
++    gap: 4px;
++    margin: 0;
++    position: fixed;
++    left: calc(env(safe-area-inset-left, 0px) + 8px);
++    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tt-inset-bottom, 0px) + 64px);
++    z-index: 2;
++    pointer-events: auto;
++}
++
++#st-gpt-image-relay.tt-gpt-body-mounted .tt-gpt-toolbar {
++    display: inline-flex;
++}
++
++#st-gpt-image-relay .tt-gpt-action,
++#st-gpt-image-relay .tt-gpt-panel button {
++    color: var(--SmartThemeBodyColor, #eee);
++    background: var(--black30a, rgba(0, 0, 0, 0.24));
++    border: 1px solid var(--tt-gpt-border);
++    border-radius: 5px;
++    cursor: pointer;
++    touch-action: manipulation;
++}
++
++#st-gpt-image-relay .tt-gpt-action {
++    min-height: 30px;
++    min-width: 30px;
++    padding: 4px 7px;
++    display: inline-flex;
++    align-items: center;
++    justify-content: center;
++    gap: 5px;
++}
++
++#st-gpt-image-relay .tt-gpt-action:hover,
++#st-gpt-image-relay .tt-gpt-panel button:hover {
++    border-color: var(--tt-gpt-accent);
++    color: var(--tt-gpt-accent);
++}
++
++#st-gpt-image-relay .tt-gpt-settings-button {
++    color: var(--tt-gpt-accent);
++}
++
++#st-gpt-image-relay .tt-gpt-panel {
++    position: fixed;
++    left: calc(env(safe-area-inset-left, 0px) + 8px);
++    bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tt-inset-bottom, 0px) + 106px);
++    width: min(430px, calc(100vw - 16px));
++    max-height: min(760px, calc(100vh - var(--tt-inset-top, 0px) - var(--tt-inset-bottom, 0px) - 118px));
++    max-height: min(760px, calc(100dvh - var(--tt-inset-top, 0px) - var(--tt-inset-bottom, 0px) - 118px));
++    display: none !important;
++    flex-direction: column;
++    overflow: hidden;
++    background: var(--tt-gpt-panel-bg);
++    border: 1px solid var(--tt-gpt-border);
++    border-radius: 7px;
++    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
++    color: var(--SmartThemeBodyColor, #eee);
++    z-index: 3;
++    pointer-events: none;
++    visibility: hidden;
++}
++
++#st-gpt-image-relay.tt-gpt-open .tt-gpt-panel {
++    display: flex !important;
++    pointer-events: auto;
++    visibility: visible;
++}
++
++#st-gpt-image-relay.tt-gpt-minimized .tt-gpt-panel-body {
++    display: none;
++}
++
++#st-gpt-image-relay .tt-gpt-panel-header {
++    display: flex;
++    align-items: center;
++    gap: 8px;
++    min-height: 38px;
++    padding: 6px 9px;
++    border-bottom: 1px solid var(--tt-gpt-border);
++    cursor: move;
++    user-select: none;
++    touch-action: none;
++}
++
++#st-gpt-image-relay .tt-gpt-panel-header strong {
++    flex: 1;
++    font-size: 14px;
++}
++
++#st-gpt-image-relay .tt-gpt-header-actions {
++    display: flex;
++    gap: 5px;
++}
++
++#st-gpt-image-relay .tt-gpt-header-actions button {
++    width: 29px;
++    height: 28px;
++    padding: 0;
++}
++
++#st-gpt-image-relay .tt-gpt-panel-body {
++    min-height: 0;
++    overflow-y: auto;
++    overscroll-behavior: contain;
++    padding: 9px;
++    padding-bottom: max(9px, var(--tt-inset-bottom, 0px));
++    display: flex;
++    flex-direction: column;
++    gap: 8px;
++}
++
++#st-gpt-image-relay label {
++    display: flex;
++    flex-direction: column;
++    gap: 4px;
++    min-width: 0;
++    color: var(--SmartThemeEmColor, #b6bbc3);
++    line-height: 1.25;
++}
++
++#st-gpt-image-relay input,
++#st-gpt-image-relay select,
++#st-gpt-image-relay textarea {
++    box-sizing: border-box;
++    width: 100%;
++    max-width: 100%;
++    min-width: 0;
++    padding: 6px 7px;
++    border: 1px solid var(--tt-gpt-border);
++    border-radius: 4px;
++    background: var(--black30a, rgba(0, 0, 0, 0.25));
++    color: var(--SmartThemeBodyColor, #eee);
++    font: inherit;
++}
++
++#st-gpt-image-relay textarea {
++    min-height: 52px;
++    resize: vertical;
++    line-height: 1.35;
++}
++
++#st-gpt-image-relay input:focus,
++#st-gpt-image-relay select:focus,
++#st-gpt-image-relay textarea:focus {
++    outline: 1px solid var(--tt-gpt-accent);
++    border-color: var(--tt-gpt-accent);
++}
++
++#st-gpt-image-relay .tt-gpt-grid {
++    display: grid;
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++    gap: 7px;
++}
++
++#st-gpt-image-relay .tt-gpt-inline {
++    display: flex;
++    align-items: center;
++    gap: 7px;
++    flex-wrap: wrap;
++}
++
++#st-gpt-image-relay .tt-gpt-inline .menu_button,
++#st-gpt-image-relay .tt-gpt-reference-file .menu_button,
++#st-gpt-image-relay .tt-gpt-reference-analysis .menu_button {
++    padding: 5px 8px;
++    white-space: nowrap;
++}
++
++#st-gpt-image-relay #tt-gpt-api-status,
++#st-gpt-image-relay .tt-gpt-status {
++    min-height: 1.2em;
++    color: var(--SmartThemeEmColor, #aab1ba);
++    overflow-wrap: anywhere;
++}
++
++#st-gpt-image-relay #tt-gpt-api-status[data-kind="success"],
++#st-gpt-image-relay .tt-gpt-status[data-kind="success"] {
++    color: #74d394;
++}
++
++#st-gpt-image-relay #tt-gpt-api-status[data-kind="error"],
++#st-gpt-image-relay .tt-gpt-status[data-kind="error"] {
++    color: #ff8d8d;
++}
++
++#st-gpt-image-relay #tt-gpt-api-status[data-kind="pending"],
++#st-gpt-image-relay .tt-gpt-status[data-kind="pending"],
++#st-gpt-image-relay .tt-gpt-status[data-kind="warning"] {
++    color: #f2c879;
++}
++
++#st-gpt-image-relay .tt-gpt-checkbox {
++    flex-direction: row;
++    align-items: center;
++    align-self: end;
++    min-height: 34px;
++}
++
++#st-gpt-image-relay .tt-gpt-checkbox input {
++    width: auto;
++    margin: 0;
++}
++
++#st-gpt-image-relay .tt-gpt-reference-row {
++    display: grid;
++    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
++    gap: 9px;
++    align-items: start;
++}
++
++#st-gpt-image-relay .tt-gpt-reference-file,
++#st-gpt-image-relay .tt-gpt-reference-analysis {
++    display: flex;
++    flex-direction: column;
++    gap: 6px;
++    min-width: 0;
++}
++
++#st-gpt-image-relay #tt-gpt-reference-preview {
++    display: block;
++    width: 100%;
++    max-height: 230px;
++    object-fit: contain;
++    border: 1px solid var(--tt-gpt-border);
++    border-radius: 4px;
++    background: #0006;
++}
++
++#st-gpt-image-relay #tt-gpt-reference-preview[hidden] {
++    display: none;
++}
++
++#st-gpt-image-relay .tt-gpt-panel-body::after {
++    content: '';
++    display: block;
++    height: max(var(--tt-viewport-bottom-inset, var(--tt-inset-bottom, 0px)), 0px);
++    pointer-events: none;
++}
++
++@media (max-width: 620px) {
++    #st-gpt-image-relay .tt-gpt-toolbar {
++        left: calc(env(safe-area-inset-left, 0px) + 6px);
++        bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tt-inset-bottom, 0px) + 92px);
++    }
++
++    #st-gpt-image-relay .tt-gpt-action {
++        padding: 4px 6px;
++    }
++
++    #st-gpt-image-relay .tt-gpt-action span {
++        display: none;
++    }
++
++    #st-gpt-image-relay .tt-gpt-panel {
++        left: 4px;
++        bottom: calc(env(safe-area-inset-bottom, 0px) + var(--tt-inset-bottom, 0px) + 134px);
++        width: calc(100vw - 8px);
++        max-height: calc(100vh - var(--tt-inset-top, 0px) - var(--tt-inset-bottom, 0px) - 142px);
++        max-height: calc(100dvh - var(--tt-inset-top, 0px) - var(--tt-inset-bottom, 0px) - 142px);
++    }
++
++    #st-gpt-image-relay input,
++    #st-gpt-image-relay select,
++    #st-gpt-image-relay textarea {
++        font-size: 16px;
++    }
++
++    #st-gpt-image-relay .tt-gpt-grid,
++    #st-gpt-image-relay .tt-gpt-reference-row {
++        grid-template-columns: minmax(0, 1fr);
++    }
++
++    #st-gpt-image-relay .tt-gpt-checkbox {
++        align-self: stretch;
++    }
++}
+diff --git a/src/endpoints/openai.js b/src/endpoints/openai.js
+index e24f6c6..9d754ca 100644
+--- a/src/endpoints/openai.js
++++ b/src/endpoints/openai.js
+@@ -12,15 +12,77 @@ import { AIMLAPI_HEADERS, OPENROUTER_HEADERS, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT
+ 
+ export const router = express.Router();
+ 
++function getOpenAiCompatibleBaseUrl(value) {
++    const raw = String(value || '').trim().replace(/\/+$/, '');
++    if (!raw) {
++        throw new Error('Image API URL is required');
++    }
++
++    const url = new URL(raw);
++    if (!['http:', 'https:'].includes(url.protocol)) {
++        throw new Error('Image API URL must use http or https');
++    }
++
++    return raw;
++}
++
++function getOpenAiCompatibleEndpoint(baseUrl, path) {
++    const versionedBase = /\/v\d+(?:\.\d+)?$/i.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
++    return `${versionedBase}/${path}`;
++}
++
++router.post('/test-image-connection', async (request, response) => {
++    try {
++        const baseUrl = getOpenAiCompatibleBaseUrl(request.body?.api_url);
++        const key = String(request.body?.api_key || '').trim()
++            || readSecret(request.user.directories, SECRET_KEYS.CUSTOM);
++        if (!key) {
++            return response.status(400).json({ error: 'API Key is required' });
++        }
++
++        const result = await fetch(getOpenAiCompatibleEndpoint(baseUrl, 'models'), {
++            headers: { Authorization: `Bearer ${key}` },
++        });
++        const text = await result.text();
++        if (!result.ok) {
++            return response.status(result.status).send(text || 'Connection failed');
++        }
++
++        let data;
++        try {
++            data = JSON.parse(text);
++        } catch {
++            data = {};
++        }
++        const sourceModels = Array.isArray(data?.data)
++            ? data.data
++            : Array.isArray(data?.models)
++                ? data.models
++                : [];
++        const models = sourceModels
++            .map(item => typeof item === 'string' ? item : item?.id || item?.name || item?.model)
++            .map(item => String(item || '').trim())
++            .filter(Boolean);
++        return response.json({ ok: true, model_count: models.length, models });
++    } catch (error) {
++        console.error('Image API connection test failed', error);
++        return response.status(500).json({ error: error.message || 'Connection failed' });
++    }
++});
++
+ router.post('/caption-image', async (request, response) => {
+     try {
+         let key = '';
+         let headers = {};
+         let bodyParams = {};
+         const customBaseUrl = request.body.reverse_proxy || request.body.base_url || '';
++        const suppliedApiKey = String(request.body?.api_key || '').trim();
++        const suppliedApiUrl = String(request.body?.api_url || '').trim();
+ 
+         if (request.body.api === 'openai' && !customBaseUrl) {
+-            key = readProviderSecret(request, SECRET_KEYS.OPENAI);
++            key = suppliedApiUrl
++                ? suppliedApiKey || readSecret(request.user.directories, SECRET_KEYS.CUSTOM)
++                : suppliedApiKey || readProviderSecret(request, SECRET_KEYS.OPENAI);
+         }
+ 
+         if (request.body.api === 'xai' && !customBaseUrl) {
+@@ -147,7 +209,9 @@ router.post('/caption-image', async (request, response) => {
+         }
+ 
+         if (request.body.api === 'openai') {
+-            apiUrl = 'https://api.openai.com/v1/chat/completions';
++            apiUrl = suppliedApiUrl
++                ? getOpenAiCompatibleEndpoint(getOpenAiCompatibleBaseUrl(suppliedApiUrl), 'chat/completions')
++                : 'https://api.openai.com/v1/chat/completions';
+         }
+ 
+         if (customBaseUrl) {
+@@ -629,28 +693,68 @@ router.post('/workers-ai/models/embedding', async (request, response) => {
+ 
+ router.post('/generate-image', async (request, response) => {
+     try {
+-        const key = readSecret(request.user.directories, SECRET_KEYS.OPENAI);
++        const suppliedApiUrl = String(request.body?.api_url || '').trim();
++        const key = String(request.body?.api_key || '').trim()
++            || (suppliedApiUrl
++                ? readSecret(request.user.directories, SECRET_KEYS.CUSTOM)
++                : readSecret(request.user.directories, SECRET_KEYS.OPENAI)
++                    || readProviderSecret(request, SECRET_KEYS.OPENAI));
+ 
+         if (!key) {
+-            console.warn('No OpenAI key found');
++            console.warn('No OpenAI-compatible image API key found');
+             return response.sendStatus(400);
+         }
+ 
+-        console.debug('OpenAI request', request.body);
++        const baseUrl = suppliedApiUrl
++            ? getOpenAiCompatibleBaseUrl(suppliedApiUrl)
++            : 'https://api.openai.com';
++        const referenceImage = String(request.body?.reference_image || '');
++        const generationBody = { ...(request.body || {}) };
++        delete generationBody.api_url;
++        delete generationBody.api_key;
++        delete generationBody.reference_image;
++        const endpoint = getOpenAiCompatibleEndpoint(
++            baseUrl,
++            referenceImage ? 'images/edits' : 'images/generations',
++        );
++        let body;
++        let headers = { Authorization: `Bearer ${key}` };
++
++        if (referenceImage) {
++            const match = referenceImage.match(/^data:([^;]+);base64,(.+)$/);
++            if (!match) {
++                return response.status(400).json({ error: 'Reference image must be a base64 data URL' });
++            }
+ 
+-        const result = await fetch('https://api.openai.com/v1/images/generations', {
++            const form = new FormData();
++            form.append('image', Buffer.from(match[2], 'base64'), {
++                filename: 'reference.png',
++                contentType: match[1] || 'image/png',
++            });
++            form.append('prompt', String(generationBody.prompt || ''));
++            form.append('model', String(generationBody.model || 'gpt-image-1'));
++            form.append('size', String(generationBody.size || '1024x1024'));
++            form.append('n', String(generationBody.n || 1));
++            if (generationBody.response_format) {
++                form.append('response_format', String(generationBody.response_format));
++            }
++            body = form;
++            headers = { ...headers, ...form.getHeaders() };
++        } else {
++            body = JSON.stringify(generationBody);
++            headers['Content-Type'] = 'application/json';
++        }
++
++        const result = await fetch(endpoint, {
+             method: 'POST',
+-            headers: {
+-                'Content-Type': 'application/json',
+-                Authorization: `Bearer ${key}`,
+-            },
+-            body: JSON.stringify(request.body),
++            headers,
++            body,
+         });
+ 
+         if (!result.ok) {
+             const text = await result.text();
+-            console.warn('OpenAI request failed', result.statusText, text);
+-            return response.status(500).send(text);
++            console.warn('OpenAI-compatible image request failed', result.status, result.statusText);
++            return response.status(result.status).send(text);
+         }
+ 
+         const data = await result.json();
+-- 
+2.55.0.windows.3
+
