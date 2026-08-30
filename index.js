@@ -1,5 +1,9 @@
 const EXTENSION_ID = 'sillytavern-gpt-image-relay';
-const ROOT_ID = 'tt-gpt-image-relay';
+// Keep the standard SillyTavern surface separate from the older TauriTavern
+// build. Both builds used the same id in early releases, which made one
+// extension incorrectly believe that the other one had already mounted.
+const ROOT_ID = 'st-gpt-image-relay';
+const LEGACY_ROOT_ID = 'tt-gpt-image-relay';
 const REFERENCE_STORAGE_KEY = `${EXTENSION_ID}:reference-image`;
 const MODEL_CACHE_KEY = `${EXTENSION_ID}:models`;
 const H3_MODEL_PRESETS = ['minimax-h3', 'gpt-image-2'];
@@ -45,9 +49,35 @@ let lastModelError = null;
 let activationPromise = null;
 let mountObserver = null;
 let generationBusy = false;
+let relayProxyAvailable = null;
 
 function getContext() {
-    return hostContext || globalThis.SillyTavern?.getContext?.() || null;
+    if (hostContext) return hostContext;
+    // Luker exposes all three names; older SillyTavern builds usually expose
+    // only SillyTavern/st. Resolve lazily so loading order does not matter.
+    for (const name of ['Luker', 'SillyTavern', 'st']) {
+        try {
+            const candidate = globalThis[name];
+            if (candidate && typeof candidate.getContext === 'function') {
+                hostContext = candidate.getContext() || null;
+                if (hostContext) return hostContext;
+            }
+        } catch (error) {
+            console.debug(`[${EXTENSION_ID}] ${name}.getContext is not ready`, error);
+        }
+    }
+    return null;
+}
+
+function reportStartupError(error) {
+    const message = error?.message || String(error || 'Unknown startup error');
+    console.error(`[${EXTENSION_ID}] failed to initialize`, error);
+    const root = getRoot();
+    if (root) {
+        root.dataset.startupError = message;
+        root.classList.add('tt-gpt-startup-error');
+    }
+    notify('error', `生图扩展启动失败：${message}`);
 }
 
 function notify(kind, message) {
@@ -69,18 +99,38 @@ function saveSettings() {
 
 function loadSettings() {
     const context = getContext();
-    if (!context) return;
-    const allSettings = context.extensionSettings || (context.extensionSettings = {});
-    const saved = allSettings[EXTENSION_ID];
-    settings = {
-        ...DEFAULT_SETTINGS,
-        ...(saved && typeof saved === 'object' ? saved : {}),
-    };
-    allSettings[EXTENSION_ID] = settings;
+    if (!context) {
+        settings ||= { ...DEFAULT_SETTINGS };
+        return;
+    }
+    try {
+        const allSettings = context.extensionSettings || (context.extensionSettings = {});
+        const saved = allSettings[EXTENSION_ID];
+        settings = {
+            ...DEFAULT_SETTINGS,
+            ...(saved && typeof saved === 'object' ? saved : {}),
+        };
+        allSettings[EXTENSION_ID] = settings;
+    } catch (error) {
+        console.warn(`[${EXTENSION_ID}] settings could not be loaded`, error);
+        settings ||= { ...DEFAULT_SETTINGS };
+    }
 }
 
 function waitForHostReady() {
-    const ready = globalThis.__TAURITAVERN__?.ready || globalThis.__TAURITAVERN_MAIN_READY__;
+    let ready = null;
+    for (const name of ['__TAURITAVERN__', '__LUKER__', 'Luker']) {
+        try {
+            const candidate = globalThis[name];
+            if (candidate?.ready && typeof candidate.ready.then === 'function') {
+                ready = candidate.ready;
+                break;
+            }
+        } catch {
+            // A host may expose a getter that is not ready during bootstrap.
+        }
+    }
+    ready ||= globalThis.__TAURITAVERN_MAIN_READY__;
     if (!ready || typeof ready.then !== 'function') return Promise.resolve();
     // Some mobile shells expose a readiness promise that never settles.
     // Do not block the extension UI forever while waiting for it.
@@ -137,15 +187,17 @@ function normalizeApiUrl(value) {
 
 function getActiveCustomApi() {
     const context = getContext() || {};
+    const chatSettings = context.chatCompletionSettings
+        || context.oai_settings
+        || globalThis.oai_settings
+        || {};
     const source = String(
-        context.oai_settings?.chat_completion_source
-        || globalThis.oai_settings?.chat_completion_source
+        chatSettings.chat_completion_source
         || document.querySelector('#chat_completion_source')?.value
         || '',
     ).toLowerCase();
     const url = normalizeApiUrl(
-        context.oai_settings?.custom_url
-        || globalThis.oai_settings?.custom_url
+        chatSettings.custom_url
         || document.querySelector('#custom_api_url_text')?.value
         || '',
     );
@@ -181,9 +233,10 @@ async function requestApi(path, options = {}) {
     for (let index = 0; index < candidates.length; index += 1) {
         const url = candidates[index];
         try {
+            const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
             const response = await fetch(url, {
                 ...options,
-                headers: { ...apiHeaders(Boolean(options.body)), ...(options.headers || {}) },
+                headers: { ...apiHeaders(Boolean(options.body) && !isFormData), ...(options.headers || {}) },
             });
             if (response.ok) return response;
             const body = await response.text();
@@ -221,9 +274,14 @@ function extractModelIds(payload) {
 async function requestHostProxy(path, body) {
     // Use an optional same-origin relay to avoid mobile WebView CORS failures.
     try {
+        const contextHeaders = getContext()?.getRequestHeaders?.();
         const response = await fetch(path, {
             method: 'POST',
-            headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+            headers: {
+                ...(contextHeaders && typeof contextHeaders === 'object' ? contextHeaders : {}),
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+            },
             body: JSON.stringify(body),
         });
         if (response.status === 404 || response.status === 405) return null;
@@ -240,6 +298,22 @@ async function requestHostProxy(path, body) {
         if (error instanceof TypeError && /failed to fetch/i.test(error.message || '')) return null;
         throw error;
     }
+}
+
+async function detectRelayProxy() {
+    if (relayProxyAvailable !== null) return relayProxyAvailable;
+    try {
+        const response = await requestHostProxy('/api/openai/test-image-connection', {
+            api_url: getEffectiveApiUrl(),
+            api_key: String(settings?.apiKey || '').trim(),
+        });
+        relayProxyAvailable = Boolean(response);
+    } catch (error) {
+        // A non-404 response means the patched route exists, even when the
+        // supplied credentials are not accepted yet.
+        relayProxyAvailable = error?.status !== 404 && error?.status !== 405;
+    }
+    return relayProxyAvailable;
 }
 
 function chooseDefaultImageModel(ids) {
@@ -260,15 +334,24 @@ function chooseDefaultAnalysisModel(ids) {
 function fillModelSelects() {
     const imageSelect = getElement('tt-gpt-image-model-select');
     const analysisSelect = getElement('tt-gpt-analysis-model-select');
+    const addOption = (select, label, value) => {
+        if (!select) return;
+        // `new Option()` is missing in a few embedded WebViews. Creating the
+        // element through the document is equivalent and broadly compatible.
+        const option = document.createElement('option');
+        option.textContent = label;
+        option.value = value;
+        select.appendChild(option);
+    };
     const makeOptions = (select, selected, emptyLabel) => {
         if (!select) return;
         const values = [...new Set([...H3_MODEL_PRESETS, ...modelIds])];
         if (selected && !values.includes(selected)) values.unshift(selected);
         select.replaceChildren();
         if (!values.length) {
-            select.add(new Option(emptyLabel, ''));
+            addOption(select, emptyLabel, '');
         } else {
-            for (const id of values) select.add(new Option(id, id));
+            for (const id of values) addOption(select, id, id);
         }
         if (selected) select.value = selected;
     };
@@ -279,10 +362,17 @@ function fillModelSelects() {
 async function refreshModels({ silent = false } = {}) {
     lastModelError = null;
     try {
-        let response = await requestHostProxy('/api/openai/test-image-connection', {
-            api_url: getEffectiveApiUrl(),
-            api_key: String(settings?.apiKey || '').trim(),
-        });
+        let response = null;
+        try {
+            response = await requestHostProxy('/api/openai/test-image-connection', {
+                api_url: getEffectiveApiUrl(),
+                api_key: String(settings?.apiKey || '').trim(),
+            });
+            relayProxyAvailable = Boolean(response);
+        } catch (error) {
+            relayProxyAvailable = error?.status !== 404 && error?.status !== 405;
+            console.warn(`[${EXTENSION_ID}] host relay model lookup failed; trying the configured endpoint`, error);
+        }
         let payload;
         if (response) {
             payload = await response.json();
@@ -464,7 +554,10 @@ function buildPrompt(mode) {
 }
 
 function extractCaption(payload) {
-    const content = payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.text ?? payload?.output_text;
+    const content = payload?.caption
+        ?? payload?.choices?.[0]?.message?.content
+        ?? payload?.choices?.[0]?.text
+        ?? payload?.output_text;
     if (typeof content === 'string') return content.trim();
     if (Array.isArray(content)) {
         return content.map(part => typeof part === 'string' ? part : part?.text || part?.content || '').join('\n').trim();
@@ -513,21 +606,23 @@ async function analyzeReference() {
             temperature: 0.2,
         };
         let response = null;
-        const customUrl = getActiveCustomApi();
-        if (customUrl) {
-            response = await requestHostProxy('/api/openai/caption-image', {
-                image,
-                prompt,
-                api: 'custom',
-                server_url: customUrl,
-                model,
-            });
-            if (!response) {
-                response = await fetch(`${customUrl}/chat/completions`, {
-                    method: 'POST',
-                    headers: { ...apiHeaders(true) },
-                    body: JSON.stringify(messageBody),
+        const manualUrl = normalizeApiUrl(settings?.apiUrl);
+        const leftCustomUrl = getActiveCustomApi();
+        const endpointUrl = manualUrl || leftCustomUrl;
+        const useLeftCustom = !manualUrl && Boolean(leftCustomUrl);
+        if (useLeftCustom || await detectRelayProxy()) {
+            try {
+                response = await requestHostProxy('/api/openai/caption-image', {
+                    image,
+                    prompt,
+                    api: useLeftCustom ? 'custom' : 'openai',
+                    api_url: endpointUrl,
+                    api_key: String(settings?.apiKey || '').trim(),
+                    ...(useLeftCustom ? { server_url: leftCustomUrl } : {}),
+                    model,
                 });
+            } catch (error) {
+                console.warn(`[${EXTENSION_ID}] host reference analysis failed; trying the configured endpoint`, error);
             }
         }
         if (!response) {
@@ -579,6 +674,60 @@ function extractImage(payload) {
 function dataUrlParts(dataUrl) {
     const match = String(dataUrl || '').match(/^data:image\/([\w.+-]+);base64,(.+)$/i);
     return match ? { extension: match[1].toLowerCase().replace('jpeg', 'jpg'), base64: match[2] } : null;
+}
+
+function dataUrlToBlob(dataUrl) {
+    const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/i);
+    if (!match) throw new Error('参考图格式无效，请重新上传 PNG、JPEG 或 WebP 图片。');
+    const binary = atob(match[2].replace(/\s+/g, ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return { blob: new Blob([bytes], { type: match[1] }), mime: match[1] };
+}
+
+async function requestDirectImage(body, referenceImage) {
+    if (!referenceImage) {
+        return requestApi('images/generations', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+    }
+
+    const { blob, mime } = dataUrlToBlob(referenceImage);
+    const extension = mime.split('/')[1]?.replace('jpeg', 'jpg') || 'png';
+    const form = new FormData();
+    form.append('image', blob, `reference.${extension}`);
+    form.append('prompt', String(body.prompt || ''));
+    form.append('model', String(body.model || 'gpt-image-1'));
+    form.append('size', String(body.size || '1024x1024'));
+    form.append('n', String(body.n || 1));
+    if (body.response_format) form.append('response_format', String(body.response_format));
+    return requestApi('images/edits', { method: 'POST', body: form });
+}
+
+async function requestGeneratedImage(body, referenceImage) {
+    let proxyError = null;
+    if (await detectRelayProxy()) {
+        try {
+            const response = await requestHostProxy('/api/openai/generate-image', {
+                ...body,
+                api_url: getEffectiveApiUrl(),
+                api_key: String(settings?.apiKey || '').trim(),
+                ...(referenceImage ? { reference_image: referenceImage } : {}),
+            });
+            if (response) return response;
+        } catch (error) {
+            proxyError = error;
+            console.warn(`[${EXTENSION_ID}] host image relay failed; trying the configured endpoint`, error);
+        }
+    }
+
+    try {
+        return await requestDirectImage(body, referenceImage);
+    } catch (error) {
+        if (proxyError && !error.cause) error.cause = proxyError;
+        throw error;
+    }
 }
 
 async function saveDataUrl(dataUrl, folderName) {
@@ -675,28 +824,15 @@ async function generateImage(mode) {
         size: settings.resolution || '1920x1080',
         response_format: 'b64_json',
     };
+    const referenceImage = getReferenceImage();
     try {
         let response;
         try {
-            response = await requestHostProxy('/api/openai/generate-image', {
-                ...body,
-                api_url: getEffectiveApiUrl(),
-                api_key: String(settings.apiKey || '').trim(),
-            });
-            if (!response) {
-                response = await requestApi('images/generations', { method: 'POST', body: JSON.stringify(body) });
-            }
+            response = await requestGeneratedImage(body, referenceImage);
         } catch (error) {
             if (error.status === 400) {
                 delete body.response_format;
-                response = await requestHostProxy('/api/openai/generate-image', {
-                    ...body,
-                    api_url: getEffectiveApiUrl(),
-                    api_key: String(settings.apiKey || '').trim(),
-                });
-                if (!response) {
-                    response = await requestApi('images/generations', { method: 'POST', body: JSON.stringify(body) });
-                }
+                response = await requestGeneratedImage(body, referenceImage);
             } else {
                 throw error;
             }
@@ -757,6 +893,7 @@ function handleSettingChange(element) {
 }
 
 function bindDrag(panel, handle) {
+    if (!panel || !handle || typeof handle.addEventListener !== 'function') return;
     let drag = null;
     handle.addEventListener('pointerdown', event => {
         if (event.target.closest('button')) return;
@@ -803,79 +940,11 @@ function buildUi() {
             <header class="tt-gpt-panel-header" data-drag-handle><strong>GPT Image</strong><div class="tt-gpt-header-actions"><button type="button" data-action="generate" title="Generate"><i class="fa-solid fa-wand-magic-sparkles"></i></button><button type="button" data-action="minimize" title="Minimize"><i class="fa-solid fa-minus"></i></button></div></header>
             <div class="tt-gpt-panel-body">
                 <div class="tt-gpt-grid"><label>Image API URL<input type="url" data-setting="apiUrl" placeholder="https://.../v1" autocomplete="url"></label><label>Image API key<input type="password" data-setting="apiKey" placeholder="API key" autocomplete="off"></label></div>
-                <div class="tt-gpt-inline"><button type="button" class="menu_button" data-action="test">Test connection</button><button type="button" class="menu_button" data-action="refresh-models">Refresh models</button><span id="tt-gpt-api-status" aria-live="polite"></span></div>
+                <div class="tt-gpt-inline"><button type="button" class="menu_button" id="tt-gpt-api-test" data-action="test">Test connection</button><button type="button" class="menu_button" data-action="refresh-models">Refresh models</button><span id="tt-gpt-api-status" aria-live="polite"></span></div>
                 <div class="tt-gpt-grid"><label>Image model<select id="tt-gpt-image-model-select" data-model-select="imageModel"></select></label><label>Image model (custom)<input type="text" data-setting="imageModel" placeholder="gpt-image-1"></label><label>Analysis model<select id="tt-gpt-analysis-model-select" data-model-select="analysisModel"></select></label><label>Analysis model (custom)<input type="text" data-setting="analysisModel" placeholder="gpt-5.6-luna"></label><label>Resolution<select data-setting="resolution">${RESOLUTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Style<select data-setting="style">${STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><label>Content source<select data-setting="sourceMode"><option value="card_text">Character card + current text</option><option value="interface_text">Current interface text only</option></select></label><label class="tt-gpt-checkbox"><input type="checkbox" data-setting="autoAnalyze"> Auto-analyze reference</label></div>
                 <label>Additional prompt<textarea data-setting="manualPrompt" rows="3" placeholder="Added to every image request"></textarea></label>
                 <div class="tt-gpt-grid"><label>Protagonist (locked)<textarea data-setting="protagonist" rows="3" placeholder="Main character only"></textarea></label><label>Scene cast<textarea data-setting="sceneCast" rows="3" placeholder="People visible in the scene"></textarea></label></div>
-                <div class="tt-gpt-reference-row"><div class="tt-gpt-reference-file"><label>Reference image<input id="tt-gpt-reference-file" type="file" accept="image/png,image/jpeg,image/webp"></label><img id="tt-gpt-reference-preview" alt="Reference preview" hidden><button type="button" class="menu_button" data-action="clear-reference">Clear reference</button></div><div class="tt-gpt-reference-analysis"><label>Image analysis (editable)<textarea id="tt-gpt-caption" data-setting="referenceCaption" rows="9" placeholder="Analysis result appears here"></textarea></label><button type="button" class="menu_button" data-action="analyze">Analyze reference</button></div></div>
-                <div id="tt-gpt-status" class="tt-gpt-status" role="status" aria-live="polite"></div>
-            </div>
-        </section>`;
-    return root;
-}
-
-function buildUiBroken() {
-    const root = document.createElement('div');
-    root.id = ROOT_ID;
-    root.innerHTML = `
-        <div class="tt-gpt-toolbar" role="toolbar" aria-label="GPT 生图">
-            <button type="button" class="tt-gpt-action" data-mode="character" title="读取角色卡和对话，生成主角">
-                <i class="fa-solid fa-user"></i><span>角色</span>
-            </button>
-            <button type="button" class="tt-gpt-action" data-mode="scene" title="读取当前对话，生成场景">
-                <i class="fa-solid fa-mountain-sun"></i><span>场景</span>
-            </button>
-            <button type="button" class="tt-gpt-action" data-mode="last" title="固定读取最新文字段落">
-                <i class="fa-solid fa-paragraph"></i><span>最后一段</span>
-            </button>
-            <button type="button" class="tt-gpt-action tt-gpt-settings-button" data-action="toggle" title="打开生图设置">
-                <i class="fa-solid fa-sliders"></i><span>设置</span>
-            </button>
-        </div>
-        <section class="tt-gpt-panel" data-tt-mobile-surface="free-window" aria-label="GPT 生图控制面板">
-            <header class="tt-gpt-panel-header" data-drag-handle>
-                <strong>GPT 生图控制</strong>
-                <div class="tt-gpt-header-actions">
-                    <button type="button" data-action="generate" title="按当前设置生成"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
-                    <button type="button" data-action="minimize" title="最小化"><i class="fa-solid fa-minus"></i></button>
-                </div>
-            </header>
-            <div class="tt-gpt-panel-body">
-                <div class="tt-gpt-grid">
-                    <label>生图 API 地址<input type="url" data-setting="apiUrl" placeholder="https://中转站/v1" autocomplete="url"></label>
-                    <label>生图 API Key<input type="password" data-setting="apiKey" placeholder="输入中转站 Key" autocomplete="off"></label>
-                </div>
-                <div class="tt-gpt-inline">
-                    <button type="button" class="menu_button" id="tt-gpt-api-test" data-action="test">连接测试</button>
-                    <button type="button" class="menu_button" data-action="refresh-models">刷新模型</button>
-                    <span id="tt-gpt-api-status" aria-live="polite"></span>
-                </div>
-                <div class="tt-gpt-grid">
-                    <label>生图模型<select id="tt-gpt-image-model-select" data-model-select="imageModel"></select></label>
-                    <label>生图模型（可手填）<input type="text" data-setting="imageModel" placeholder="例如 gpt-image-1"></label>
-                    <label>分析模型<select id="tt-gpt-analysis-model-select" data-model-select="analysisModel"></select></label>
-                    <label>分析模型（可手填）<input type="text" data-setting="analysisModel" placeholder="例如 gpt-5.6-luna"></label>
-                    <label>分辨率<select data-setting="resolution">${RESOLUTIONS.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
-                    <label>生成风格<select data-setting="style">${STYLES.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label>
-                    <label>内容来源<select data-setting="sourceMode"><option value="card_text">角色卡 + 当前文字</option><option value="interface_text">只读当前界面文字</option></select></label>
-                    <label class="tt-gpt-checkbox"><input type="checkbox" data-setting="autoAnalyze">上传参考图后自动分析</label>
-                </div>
-                <label>附加提示词<textarea data-setting="manualPrompt" rows="3" placeholder="每次生图都会附加的要求"></textarea></label>
-                <div class="tt-gpt-grid">
-                    <label>主角设定（只控制主角）<textarea data-setting="protagonist" rows="3" placeholder="例如：姓名、性别、年龄、发型、服装、外貌"></textarea></label>
-                    <label>场景角色设定（只控制场景中出现的人）<textarea data-setting="sceneCast" rows="3" placeholder="例如：主角和登记员；不要添加其他人物"></textarea></label>
-                </div>
-                <div class="tt-gpt-reference-row">
-                    <div class="tt-gpt-reference-file">
-                        <label>图像参考<input id="tt-gpt-reference-file" type="file" accept="image/png,image/jpeg,image/webp"></label>
-                        <img id="tt-gpt-reference-preview" alt="参考图预览" hidden>
-                        <button type="button" class="menu_button" data-action="clear-reference">清除参考</button>
-                    </div>
-                    <div class="tt-gpt-reference-analysis">
-                        <label>图像分析结果（可编辑）<textarea id="tt-gpt-caption" data-setting="referenceCaption" rows="9" placeholder="上传参考图后会自动填入分析结果"></textarea></label>
-                        <button type="button" class="menu_button" id="tt-gpt-analyze" data-action="analyze">重新分析参考图</button>
-                    </div>
-                </div>
+                <div class="tt-gpt-reference-row"><div class="tt-gpt-reference-file"><label>Reference image<input id="tt-gpt-reference-file" type="file" accept="image/png,image/jpeg,image/webp"></label><img id="tt-gpt-reference-preview" alt="Reference preview" hidden><button type="button" class="menu_button" data-action="clear-reference">Clear reference</button></div><div class="tt-gpt-reference-analysis"><label>Image analysis (editable)<textarea id="tt-gpt-caption" data-setting="referenceCaption" rows="9" placeholder="Analysis result appears here"></textarea></label><button type="button" class="menu_button" id="tt-gpt-analyze" data-action="analyze">Analyze reference</button></div></div>
                 <div id="tt-gpt-status" class="tt-gpt-status" role="status" aria-live="polite"></div>
             </div>
         </section>`;
@@ -886,6 +955,14 @@ function setupUi(root) {
     const panel = root.querySelector('.tt-gpt-panel');
     const handle = root.querySelector('[data-drag-handle]');
     const settingsButton = root.querySelector('.tt-gpt-settings-button');
+    if (!panel || !handle) throw new Error('生图面板结构不完整');
+    const closestElement = (target, selector) => {
+        if (!target) return null;
+        if (typeof target.closest === 'function') return target.closest(selector);
+        return target.parentElement && typeof target.parentElement.closest === 'function'
+            ? target.parentElement.closest(selector)
+            : null;
+    };
     let lastSettingsToggle = 0;
     const toggleSettings = event => {
         event.preventDefault();
@@ -904,13 +981,8 @@ function setupUi(root) {
         settingsButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
     };
     settingsButton?.setAttribute('aria-expanded', 'false');
-    // Direct listeners are required by some Android WebViews where delegated
-    // events on a display:contents extension root do not bubble reliably.
-    settingsButton?.addEventListener('touchend', toggleSettings, { passive: false });
-    settingsButton?.addEventListener('pointerup', toggleSettings);
-    settingsButton?.addEventListener('click', toggleSettings);
     const dispatchAction = event => {
-        const button = event.target.closest('button');
+        const button = closestElement(event.target, 'button');
         if (!button || !root.contains(button)) return;
         const action = button.dataset.action;
         const mode = button.dataset.mode;
@@ -919,6 +991,7 @@ function setupUi(root) {
             return;
         }
         if (action === 'toggle') toggleSettings(event);
+        if (action === 'generate') void generateImage('last');
         if (action === 'minimize') root.classList.toggle('tt-gpt-minimized');
         if (action === 'test') void testConnection();
         if (action === 'refresh-models') void refreshModels();
@@ -926,9 +999,15 @@ function setupUi(root) {
         if (action === 'clear-reference') {
             setReferenceImage('');
             settings.referenceCaption = '';
-            getElement('tt-gpt-caption').value = '';
-            getElement('tt-gpt-reference-preview').hidden = true;
-            getElement('tt-gpt-reference-file').value = '';
+            const caption = getElement('tt-gpt-caption');
+            const preview = getElement('tt-gpt-reference-preview');
+            const fileInput = getElement('tt-gpt-reference-file');
+            if (caption) caption.value = '';
+            if (preview) {
+                preview.removeAttribute('src');
+                preview.hidden = true;
+            }
+            if (fileInput) fileInput.value = '';
             saveSettings();
             setStatus('参考图和分析结果已清除。', 'success');
         }
@@ -937,7 +1016,7 @@ function setupUi(root) {
     // Some mobile ST toolbars suppress bubbled click events. Handle touch
     // activation during capture, then ignore the synthetic click that follows.
     root.addEventListener('pointerup', event => {
-        if (!event.target.closest('button')) return;
+        if (!closestElement(event.target, 'button')) return;
         lastPointerAction = Date.now();
         dispatchAction(event);
     }, true);
@@ -946,13 +1025,13 @@ function setupUi(root) {
         dispatchAction(event);
     });
     root.addEventListener('input', event => {
-        const element = event.target.closest('[data-setting]');
+        const element = closestElement(event.target, '[data-setting]');
         if (element) handleSettingChange(element);
     });
     root.addEventListener('change', event => {
-        const element = event.target.closest('[data-setting]');
+        const element = closestElement(event.target, '[data-setting]');
         if (element) handleSettingChange(element);
-        const modelSelect = event.target.closest('[data-model-select]');
+        const modelSelect = closestElement(event.target, '[data-model-select]');
         if (modelSelect && modelSelect.value) {
             const key = modelSelect.dataset.modelSelect;
             settings[key] = modelSelect.value;
@@ -994,28 +1073,57 @@ function mountUi() {
     const container = document.body;
     if (!container) return false;
     const root = buildUi();
-    if (container === document.body) root.classList.add('tt-gpt-body-mounted');
+    root.classList.add('tt-gpt-body-mounted');
+    root.dataset.extensionId = EXTENSION_ID;
+    root.dataset.legacyRootId = LEGACY_ROOT_ID;
     container.appendChild(root);
-    setupUi(root);
+    try {
+        setupUi(root);
+    } catch (error) {
+        root.remove();
+        throw error;
+    }
     return true;
+}
+
+function scheduleUiMount() {
+    const stopWatching = () => {
+        mountObserver?.disconnect();
+        mountObserver = null;
+    };
+    const attemptMount = () => {
+        try {
+            if (!mountUi()) return false;
+            stopWatching();
+            return true;
+        } catch (error) {
+            stopWatching();
+            reportStartupError(error);
+            return true;
+        }
+    };
+
+    if (attemptMount()) return;
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', attemptMount, { once: true });
+    }
+    const observerTarget = document.documentElement;
+    if (observerTarget && typeof MutationObserver === 'function') {
+        mountObserver = new MutationObserver(attemptMount);
+        mountObserver.observe(observerTarget, { childList: true, subtree: true });
+        setTimeout(stopWatching, 30000);
+    } else {
+        setTimeout(attemptMount, 0);
+    }
 }
 
 async function activateImpl() {
     await waitForHostReady();
-    hostContext = globalThis.SillyTavern?.getContext?.() || null;
+    hostContext = getContext();
     if (!hostContext) console.warn(`[${EXTENSION_ID}] SillyTavern context is not ready; mounting UI anyway`);
     settings ||= { ...DEFAULT_SETTINGS };
     loadSettings();
-    if (!mountUi()) {
-        mountObserver = new MutationObserver(() => {
-            if (mountUi()) {
-                mountObserver?.disconnect();
-                mountObserver = null;
-            }
-        });
-        mountObserver.observe(document.body, { childList: true, subtree: true });
-        setTimeout(() => mountObserver?.disconnect(), 30000);
-    }
+    scheduleUiMount();
 }
 
 export function activate() {
@@ -1024,4 +1132,4 @@ export function activate() {
 }
 
 globalThis[EXTENSION_ID] = { activate, generateImage, analyzeReference };
-void activate();
+void activate().catch(reportStartupError);
